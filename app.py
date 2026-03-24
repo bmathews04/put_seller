@@ -1,3 +1,5 @@
+import json
+import ast
 import pandas as pd
 import streamlit as st
 
@@ -86,6 +88,124 @@ def summarize_exclusions(results_by_symbol):
     )
 
     return stock_df, contract_df
+
+
+def try_parse_structured(text: str):
+    """
+    Try JSON first, then Python literal parsing.
+    Returns: (parsed_obj, parser_used, error_message)
+    """
+    if not text.strip():
+        return None, None, "No content pasted."
+
+    try:
+        return json.loads(text), "json", None
+    except Exception:
+        pass
+
+    try:
+        return ast.literal_eval(text), "python_literal", None
+    except Exception as e:
+        return None, None, str(e)
+
+
+def validate_contract_like(obj):
+    required = [
+        "symbol",
+        "expiration_date",
+        "dte",
+        "strike",
+        "option_type",
+        "bid",
+        "ask",
+    ]
+    optional_checks = [
+        "delta",
+        "open_interest",
+        "volume",
+        "implied_volatility",
+        "in_the_money",
+    ]
+
+    findings = []
+    missing = [k for k in required if k not in obj]
+    if missing:
+        findings.append(("Missing required fields", ", ".join(missing)))
+    else:
+        findings.append(("Required fields", "All required contract fields present"))
+
+    if "bid" in obj and "ask" in obj:
+        try:
+            bid = float(obj["bid"]) if obj["bid"] is not None else None
+            ask = float(obj["ask"]) if obj["ask"] is not None else None
+            if bid is None or ask is None:
+                findings.append(("Bid/ask check", "Bid or ask is missing"))
+            elif ask < bid:
+                findings.append(("Bid/ask check", f"Invalid spread: ask ({ask}) < bid ({bid})"))
+            else:
+                findings.append(("Bid/ask check", f"Valid spread: {ask - bid:.4f}"))
+        except Exception:
+            findings.append(("Bid/ask check", "Could not parse bid/ask as numeric"))
+
+    if "delta" in obj:
+        try:
+            delta = obj["delta"]
+            if delta is None:
+                findings.append(("Delta", "Delta is missing"))
+            else:
+                findings.append(("Delta", f"Delta present: {delta}"))
+        except Exception:
+            findings.append(("Delta", "Could not parse delta"))
+
+    for key in optional_checks:
+        if key in obj:
+            findings.append((key, f"Present: {obj[key]}"))
+        else:
+            findings.append((key, "Not present"))
+
+    return pd.DataFrame(findings, columns=["check", "result"])
+
+
+def validate_recommendation_like(obj):
+    required = [
+        "symbol",
+        "stock_price",
+        "selected_contract",
+        "scores",
+    ]
+
+    findings = []
+    missing = [k for k in required if k not in obj]
+    if missing:
+        findings.append(("Missing required fields", ", ".join(missing)))
+    else:
+        findings.append(("Required fields", "All required recommendation fields present"))
+
+    if "selected_contract" in obj:
+        if isinstance(obj["selected_contract"], dict):
+            findings.append(("selected_contract", "Looks like nested dict payload"))
+        else:
+            findings.append(("selected_contract", f"Present, type={type(obj['selected_contract']).__name__}"))
+
+    if "scores" in obj:
+        if isinstance(obj["scores"], dict):
+            findings.append(("scores", "Looks like nested dict payload"))
+        else:
+            findings.append(("scores", f"Present, type={type(obj['scores']).__name__}"))
+
+    for key in [
+        "suggested_entry_limit",
+        "acceptable_entry_low",
+        "acceptable_entry_high",
+        "profit_take_debit",
+        "confidence_level",
+    ]:
+        if key in obj:
+            findings.append((key, f"Present: {obj[key]}"))
+        else:
+            findings.append((key, "Not present"))
+
+    return pd.DataFrame(findings, columns=["check", "result"])
 
 
 # ---------------------------
@@ -193,8 +313,8 @@ cfg = ScanConfig(
 # ---------------------------
 # Tabs
 # ---------------------------
-tab_dashboard, tab_ranked, tab_details, tab_diagnostics = st.tabs(
-    ["Dashboard", "Ranked Setups", "Contract Details", "Diagnostics"]
+tab_dashboard, tab_ranked, tab_details, tab_diagnostics, tab_debug = st.tabs(
+    ["Dashboard", "Ranked Setups", "Contract Details", "Diagnostics", "Debug / Validation"]
 )
 
 
@@ -207,6 +327,8 @@ if not run_scan:
         st.caption("Run a scan to inspect contract details.")
     with tab_diagnostics:
         st.caption("Diagnostics will appear after a scan.")
+    with tab_debug:
+        st.caption("Paste logs, JSON, recommendation output, or raw contract data here for validation.")
     st.stop()
 
 
@@ -550,3 +672,129 @@ with tab_diagnostics:
 
     per_symbol_df = pd.DataFrame(per_symbol_rows)
     st.dataframe(per_symbol_df, use_container_width=True)
+
+
+# ---------------------------
+# Debug / Validation
+# ---------------------------
+with tab_debug:
+    st.subheader("Debug / Validation")
+
+    st.markdown(
+        """
+Use this tab to paste:
+- traceback / error logs
+- raw JSON or dict output
+- recommendation rows
+- contract payloads
+- copied DataFrame rows
+
+This is intended to make validation faster when something looks off.
+"""
+    )
+
+    debug_mode = st.radio(
+        "What are you pasting?",
+        options=[
+            "Raw text / traceback",
+            "JSON / dict payload",
+            "Recommendation row",
+            "Contract payload",
+            "DataFrame rows / CSV-like text",
+        ],
+        horizontal=False,
+    )
+
+    pasted_text = st.text_area(
+        "Paste content here",
+        height=250,
+        placeholder="Paste logs, JSON, dicts, recommendation output, or rows here...",
+    )
+
+    validate_now = st.button("Validate pasted content")
+
+    if validate_now:
+        if not pasted_text.strip():
+            st.warning("Paste something first.")
+        else:
+            if debug_mode == "Raw text / traceback":
+                st.markdown("### Raw text preview")
+                st.code(pasted_text)
+
+                st.markdown("### Quick checks")
+                quick_flags = []
+                lower_text = pasted_text.lower()
+
+                if "traceback" in lower_text:
+                    quick_flags.append("Contains a Python traceback")
+                if "keyerror" in lower_text:
+                    quick_flags.append("Contains KeyError")
+                if "modulenotfounderror" in lower_text:
+                    quick_flags.append("Contains ModuleNotFoundError")
+                if "403" in lower_text or "forbidden" in lower_text:
+                    quick_flags.append("Contains HTTP 403 / Forbidden")
+                if "yfinance" in lower_text:
+                    quick_flags.append("Mentions yfinance")
+                if "delta" in lower_text:
+                    quick_flags.append("Mentions delta")
+
+                if quick_flags:
+                    for flag in quick_flags:
+                        st.write(f"- {flag}")
+                else:
+                    st.write("No obvious patterns found.")
+
+            elif debug_mode == "JSON / dict payload":
+                parsed, parser_used, parse_error = try_parse_structured(pasted_text)
+
+                if parsed is None:
+                    st.error(f"Could not parse structured content: {parse_error}")
+                    st.code(pasted_text)
+                else:
+                    st.success(f"Parsed successfully using: {parser_used}")
+                    st.write("Parsed object type:", type(parsed).__name__)
+                    st.json(parsed)
+
+                    if isinstance(parsed, dict):
+                        st.markdown("### Top-level keys")
+                        st.write(list(parsed.keys()))
+
+            elif debug_mode == "Recommendation row":
+                parsed, parser_used, parse_error = try_parse_structured(pasted_text)
+
+                if parsed is None or not isinstance(parsed, dict):
+                    st.error("Recommendation row should parse into a dictionary-like object.")
+                    if parse_error:
+                        st.caption(parse_error)
+                else:
+                    st.success(f"Parsed recommendation row using: {parser_used}")
+                    st.json(parsed)
+                    st.markdown("### Validation results")
+                    st.dataframe(validate_recommendation_like(parsed), use_container_width=True)
+
+            elif debug_mode == "Contract payload":
+                parsed, parser_used, parse_error = try_parse_structured(pasted_text)
+
+                if parsed is None or not isinstance(parsed, dict):
+                    st.error("Contract payload should parse into a dictionary-like object.")
+                    if parse_error:
+                        st.caption(parse_error)
+                else:
+                    st.success(f"Parsed contract payload using: {parser_used}")
+                    st.json(parsed)
+                    st.markdown("### Validation results")
+                    st.dataframe(validate_contract_like(parsed), use_container_width=True)
+
+            elif debug_mode == "DataFrame rows / CSV-like text":
+                st.markdown("### Raw pasted rows")
+                st.code(pasted_text)
+
+                lines = [line for line in pasted_text.splitlines() if line.strip()]
+                st.write(f"Detected {len(lines)} non-empty lines.")
+
+                if len(lines) >= 2:
+                    st.info(
+                        "This looks like tabular text. If you want, the next step can be adding a parser for tab-separated or CSV rows."
+                    )
+                else:
+                    st.warning("Not enough lines detected to infer a table.")
