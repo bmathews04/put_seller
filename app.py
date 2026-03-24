@@ -165,6 +165,10 @@ market_provider = YFinanceMarketProvider()
 
 try:
     universe = universe_provider.get_universe()
+except FileNotFoundError as e:
+    st.error(str(e))
+    st.info("Bootstrap the universe locally by running: python bootstrap_sp500.py")
+    st.stop()
 except Exception as e:
     st.error(f"Failed to load S&P 500 universe: {e}")
     st.stop()
