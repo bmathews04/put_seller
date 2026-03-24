@@ -390,7 +390,7 @@ if run_scan:
 
         try:
             metrics = market_provider.get_stock_metrics(symbol)
-            contracts = market_provider.get_option_contracts(symbol)
+            contracts = market_provider.get_option_contracts(symbol, cfg)
 
             results_by_symbol[symbol]["contract_count"] = len(contracts)
 
