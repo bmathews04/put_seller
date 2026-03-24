@@ -1,5 +1,5 @@
 from datetime import date, datetime
-
+import pandas as pd
 import yfinance as yf
 
 from models import StockMetrics
@@ -12,7 +12,13 @@ def _safe_date(value):
         return value.date()
     if isinstance(value, date):
         return value
-    return None
+    try:
+        ts = pd.to_datetime(value)
+        if pd.isna(ts):
+            return None
+        return ts.date()
+    except Exception:
+        return None
 
 
 class YFinanceFundamentalsProvider:
@@ -23,15 +29,29 @@ class YFinanceFundamentalsProvider:
         price = info.get("currentPrice") or info.get("regularMarketPrice")
         earnings_date = None
 
-        # yfinance can return earnings dates in different shapes depending on symbol/data availability
+        # First try calendar
         cal = getattr(ticker, "calendar", None)
         if cal is not None:
             try:
                 if hasattr(cal, "loc") and "Earnings Date" in cal.index:
-                    val = cal.loc["Earnings Date"][0]
-                    earnings_date = _safe_date(val)
+                    raw = cal.loc["Earnings Date"]
+                    if hasattr(raw, "__iter__") and not isinstance(raw, str):
+                        first = list(raw)[0]
+                    else:
+                        first = raw
+                    earnings_date = _safe_date(first)
             except Exception:
                 earnings_date = None
+
+        # Fallback to earnings_dates dataframe if available
+        if earnings_date is None:
+            try:
+                edf = getattr(ticker, "earnings_dates", None)
+                if edf is not None and len(edf) > 0:
+                    idx0 = edf.index[0]
+                    earnings_date = _safe_date(idx0)
+            except Exception:
+                pass
 
         market_cap = info.get("marketCap")
         free_cashflow = info.get("freeCashflow")
