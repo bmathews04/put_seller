@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from config import ScanConfig
-from providers.universe_provider import SP500UniverseProvider
+from tickers import TICKERS
 from providers.yfinance_market import YFinanceMarketProvider
 from recommendation_engine import build_recommendations_for_stock
 
@@ -71,13 +71,19 @@ def summarize_exclusions(results_by_symbol):
             for reason in reason_list:
                 contract_exclusions[reason] = contract_exclusions.get(reason, 0) + 1
 
-    stock_df = pd.DataFrame(
-        [{"reason": k, "count": v} for k, v in stock_exclusions.items()]
-    ).sort_values("count", ascending=False) if stock_exclusions else pd.DataFrame(columns=["reason", "count"])
+    stock_df = (
+        pd.DataFrame([{"reason": k, "count": v} for k, v in stock_exclusions.items()])
+        .sort_values("count", ascending=False)
+        if stock_exclusions
+        else pd.DataFrame(columns=["reason", "count"])
+    )
 
-    contract_df = pd.DataFrame(
-        [{"reason": k, "count": v} for k, v in contract_exclusions.items()]
-    ).sort_values("count", ascending=False) if contract_exclusions else pd.DataFrame(columns=["reason", "count"])
+    contract_df = (
+        pd.DataFrame([{"reason": k, "count": v} for k, v in contract_exclusions.items()])
+        .sort_values("count", ascending=False)
+        if contract_exclusions
+        else pd.DataFrame(columns=["reason", "count"])
+    )
 
     return stock_df, contract_df
 
@@ -93,24 +99,71 @@ with st.sidebar:
     max_symbols = st.number_input(
         "Max symbols to scan",
         min_value=10,
-        max_value=500,
-        value=50,
+        max_value=len(TICKERS),
+        value=min(50, len(TICKERS)),
         step=10,
-        help="Controls how many S&P 500 names to scan on this run."
+        help="Controls how many hardcoded names to scan on this run.",
     )
 
     min_dte = st.number_input("Min DTE", min_value=1, max_value=365, value=25)
     max_dte = st.number_input("Max DTE", min_value=1, max_value=365, value=40)
     target_dte = st.number_input("Target DTE", min_value=1, max_value=365, value=32)
 
-    min_delta = st.number_input("Min abs delta", min_value=0.01, max_value=1.00, value=0.12, step=0.01, format="%.2f")
-    max_delta = st.number_input("Max abs delta", min_value=0.01, max_value=1.00, value=0.22, step=0.01, format="%.2f")
-    target_delta = st.number_input("Target abs delta", min_value=0.01, max_value=1.00, value=0.17, step=0.01, format="%.2f")
+    min_delta = st.number_input(
+        "Min abs delta",
+        min_value=0.01,
+        max_value=1.00,
+        value=0.12,
+        step=0.01,
+        format="%.2f",
+    )
+    max_delta = st.number_input(
+        "Max abs delta",
+        min_value=0.01,
+        max_value=1.00,
+        value=0.22,
+        step=0.01,
+        format="%.2f",
+    )
+    target_delta = st.number_input(
+        "Target abs delta",
+        min_value=0.01,
+        max_value=1.00,
+        value=0.17,
+        step=0.01,
+        format="%.2f",
+    )
 
-    min_oi = st.number_input("Min open interest", min_value=0, max_value=100000, value=500, step=50)
-    min_volume = st.number_input("Min volume", min_value=0, max_value=100000, value=25, step=5)
-    max_spread_pct = st.number_input("Max spread %", min_value=0.01, max_value=1.00, value=0.12, step=0.01, format="%.2f")
-    min_premium = st.number_input("Min premium", min_value=0.01, max_value=100.0, value=0.35, step=0.05, format="%.2f")
+    min_oi = st.number_input(
+        "Min open interest",
+        min_value=0,
+        max_value=100000,
+        value=500,
+        step=50,
+    )
+    min_volume = st.number_input(
+        "Min volume",
+        min_value=0,
+        max_value=100000,
+        value=25,
+        step=5,
+    )
+    max_spread_pct = st.number_input(
+        "Max spread %",
+        min_value=0.01,
+        max_value=1.00,
+        value=0.12,
+        step=0.01,
+        format="%.2f",
+    )
+    min_premium = st.number_input(
+        "Min premium",
+        min_value=0.01,
+        max_value=100.0,
+        value=0.35,
+        step=0.05,
+        format="%.2f",
+    )
 
     exclude_earnings = st.checkbox("Exclude earnings before expiry", value=True)
     require_quality_data = st.checkbox("Require quality data", value=False)
@@ -160,24 +213,13 @@ if not run_scan:
 # ---------------------------
 # Data fetch / scan
 # ---------------------------
-universe_provider = SP500UniverseProvider()
 market_provider = YFinanceMarketProvider()
 
-try:
-    universe = universe_provider.get_universe()
-except FileNotFoundError as e:
-    st.error(str(e))
-    st.info("Bootstrap the universe locally by running: python bootstrap_sp500.py")
-    st.stop()
-except Exception as e:
-    st.error(f"Failed to load S&P 500 universe: {e}")
-    st.stop()
-
-if cfg.max_symbols_to_scan is not None:
-    universe = universe[: cfg.max_symbols_to_scan]
-
-symbols = [u.symbol for u in universe]
-metadata_by_symbol = {u.symbol: u for u in universe}
+symbols = TICKERS[: cfg.max_symbols_to_scan] if cfg.max_symbols_to_scan else TICKERS
+metadata_by_symbol = {
+    symbol: {"company_name": None, "sector": None}
+    for symbol in symbols
+}
 
 all_recommendations = []
 results_by_symbol = {}
@@ -209,7 +251,6 @@ for idx, symbol in enumerate(symbols, start=1):
 
         recs = build_recommendations_for_stock(metrics, contracts, cfg)
 
-        # collect exclusion reasons from the raw contracts after validation path
         contract_reason_lists = []
         for c in contracts:
             reasons = getattr(c, "contract_exclusion_reasons", [])
@@ -223,10 +264,9 @@ for idx, symbol in enumerate(symbols, start=1):
 
         if recs:
             results_by_symbol[symbol]["recommendation_count"] = len(recs)
-            # attach metadata for downstream display
             for rec in recs:
-                rec._company_name = metadata_by_symbol.get(symbol).company_name if symbol in metadata_by_symbol else None
-                rec._sector = metadata_by_symbol.get(symbol).sector if symbol in metadata_by_symbol else None
+                rec._company_name = metadata_by_symbol.get(symbol, {}).get("company_name")
+                rec._sector = metadata_by_symbol.get(symbol, {}).get("sector")
             all_recommendations.append(recs[0])
         else:
             if not results_by_symbol[symbol]["stock_exclusion_reasons"]:
@@ -280,9 +320,21 @@ with tab_dashboard:
     if ranked_df.empty:
         st.warning("No recommendations found for this scan.")
     else:
-        avg_yield = ranked_df["annualized_secured_yield"].dropna().mean() if "annualized_secured_yield" in ranked_df else None
-        avg_cushion = ranked_df["breakeven_discount_pct"].dropna().mean() if "breakeven_discount_pct" in ranked_df else None
-        avg_final = ranked_df["final_score"].dropna().mean() if "final_score" in ranked_df else None
+        avg_yield = (
+            ranked_df["annualized_secured_yield"].dropna().mean()
+            if "annualized_secured_yield" in ranked_df
+            else None
+        )
+        avg_cushion = (
+            ranked_df["breakeven_discount_pct"].dropna().mean()
+            if "breakeven_discount_pct" in ranked_df
+            else None
+        )
+        avg_final = (
+            ranked_df["final_score"].dropna().mean()
+            if "final_score" in ranked_df
+            else None
+        )
 
         c6, c7, c8 = st.columns(3)
         c6.metric("Avg annualized yield", fmt_pct(avg_yield))
