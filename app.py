@@ -357,19 +357,18 @@ if not run_scan and not st.session_state.scan_completed:
         st.caption("Paste logs, JSON, recommendation output, or raw contract data here for validation.")
     st.stop()
 
+market_provider = YFinanceMarketProvider()
+
+symbols = TICKERS[: cfg.max_symbols_to_scan] if cfg.max_symbols_to_scan else TICKERS
+metadata_by_symbol = {
+    symbol: TICKER_METADATA.get(symbol, {"company_name": None, "sector": None})
+    for symbol in symbols
+}
 
 # ---------------------------
 # Data fetch / scan
 # ---------------------------
 if run_scan:
-    market_provider = YFinanceMarketProvider()
-
-    symbols = TICKERS[: cfg.max_symbols_to_scan] if cfg.max_symbols_to_scan else TICKERS
-    metadata_by_symbol = {
-        symbol: TICKER_METADATA.get(symbol, {"company_name": None, "sector": None})
-        for symbol in symbols
-    }
-
     all_recommendations = []
     results_by_symbol = {}
 
