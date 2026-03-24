@@ -1,11 +1,26 @@
 from datetime import date, datetime
 
 import pandas as pd
+import streamlit as st
 import yfinance as yf
 
+from config import ScanConfig
 from greeks import black_scholes_put_delta
 from models import OptionContract
 from providers.yfinance_fundamentals import YFinanceFundamentalsProvider
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_stock_metrics(symbol: str):
+    provider = YFinanceFundamentalsProvider()
+    return provider.get_stock_metrics(symbol)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_option_chain(symbol: str, exp_str: str):
+    ticker = yf.Ticker(symbol)
+    chain = ticker.option_chain(exp_str)
+    return chain.puts.copy()
 
 
 class YFinanceMarketProvider:
@@ -14,12 +29,11 @@ class YFinanceMarketProvider:
         self.risk_free_rate = risk_free_rate
 
     def get_stock_metrics(self, symbol: str):
-        return self.fundamentals.get_stock_metrics(symbol)
+        return _cached_stock_metrics(symbol)
 
-    def get_option_contracts(self, symbol: str) -> list[OptionContract]:
+    def get_option_contracts(self, symbol: str, cfg: ScanConfig | None = None) -> list[OptionContract]:
         ticker = yf.Ticker(symbol)
 
-        # Pull underlying price once so delta estimation is consistent across expirations
         stock_metrics = self.get_stock_metrics(symbol)
         underlying_price = stock_metrics.stock_price
 
@@ -36,9 +50,13 @@ class YFinanceMarketProvider:
             if dte <= 0:
                 continue
 
+            # Early DTE filter to reduce workload
+            if cfg is not None:
+                if dte < cfg.min_dte or dte > cfg.max_dte:
+                    continue
+
             try:
-                chain = ticker.option_chain(exp_str)
-                puts: pd.DataFrame = chain.puts.copy()
+                puts: pd.DataFrame = _cached_option_chain(symbol, exp_str)
             except Exception:
                 continue
 
