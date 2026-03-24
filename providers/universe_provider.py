@@ -1,9 +1,5 @@
-from __future__ import annotations
-
 from pathlib import Path
-
 import pandas as pd
-
 from models import StockMetadata
 
 
@@ -13,8 +9,7 @@ class SP500UniverseProvider:
     def get_universe(self) -> list[StockMetadata]:
         if not self.LOCAL_CSV.exists():
             raise FileNotFoundError(
-                f"{self.LOCAL_CSV} not found. Run bootstrap_sp500.py locally first "
-                "and commit the generated CSV to the repo."
+                f"{self.LOCAL_CSV} not found. Add it to the repo."
             )
 
         df = pd.read_csv(self.LOCAL_CSV)
@@ -26,9 +21,9 @@ class SP500UniverseProvider:
                 f"{self.LOCAL_CSV} is missing required columns: {missing}"
             )
 
-        results: list[StockMetadata] = []
+        results = []
         for _, row in df.iterrows():
-            symbol = str(row["Symbol"]).strip().replace(".", "-", regex=False)
+            symbol = str(row["Symbol"]).strip().replace(".", "-")
             results.append(
                 StockMetadata(
                     symbol=symbol,
