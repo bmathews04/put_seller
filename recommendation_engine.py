@@ -76,16 +76,22 @@ def assign_confidence(metrics: StockMetrics, contract: OptionContract, stock_sco
 
     if not metrics.quality_data_complete:
         concerns += 1
+
     if metrics.earnings_date is None:
-        concerns += 1
+        concerns += 2
+
     if contract.spread_pct is not None and contract.spread_pct > 0.10:
         concerns += 1
+
     if contract_score.liquidity_score < 55:
         concerns += 1
 
-    if concerns == 0:
+    if stock_score.event_stability_score < 50:
+        concerns += 1
+
+    if concerns <= 1:
         return "High"
-    if concerns <= 2:
+    if concerns <= 3:
         return "Medium"
     return "Low"
 
