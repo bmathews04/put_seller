@@ -1,4 +1,3 @@
-import math
 import pandas as pd
 
 
@@ -99,4 +98,94 @@ def build_technical_context(
         "breakeven_vs_support": float(breakeven_vs_support) if breakeven_vs_support is not None else None,
         "cushion_atr_units": float(cushion_atr_units) if cushion_atr_units is not None else None,
         "trend_state": trend_state,
+    }
+
+
+def score_technical_context(tech: dict) -> dict:
+    trend_state = tech.get("trend_state")
+    breakeven_vs_support = tech.get("breakeven_vs_support")
+    cushion_atr_units = tech.get("cushion_atr_units")
+
+    if trend_state == "Bullish":
+        trend_score = 90.0
+    elif trend_state == "Neutral":
+        trend_score = 55.0
+    elif trend_state == "Weak":
+        trend_score = 20.0
+    else:
+        trend_score = 50.0
+
+    if breakeven_vs_support is None:
+        support_score = 50.0
+    elif breakeven_vs_support < 0:
+        support_score = 90.0
+    elif breakeven_vs_support <= 1.0:
+        support_score = 65.0
+    elif breakeven_vs_support <= 3.0:
+        support_score = 40.0
+    else:
+        support_score = 20.0
+
+    if cushion_atr_units is None:
+        atr_score = 50.0
+    elif cushion_atr_units >= 2.0:
+        atr_score = 90.0
+    elif cushion_atr_units >= 1.5:
+        atr_score = 75.0
+    elif cushion_atr_units >= 1.0:
+        atr_score = 55.0
+    elif cushion_atr_units >= 0.5:
+        atr_score = 35.0
+    else:
+        atr_score = 15.0
+
+    technical_score = (
+        0.35 * trend_score
+        + 0.40 * support_score
+        + 0.25 * atr_score
+    )
+
+    if technical_score >= 80:
+        label = "Supportive"
+    elif technical_score >= 60:
+        label = "Mildly supportive"
+    elif technical_score >= 40:
+        label = "Neutral"
+    elif technical_score >= 20:
+        label = "Caution"
+    else:
+        label = "Weak"
+
+    explanations = []
+
+    if trend_state == "Bullish":
+        explanations.append("Trend is bullish, which supports short-put trade confidence.")
+    elif trend_state == "Weak":
+        explanations.append("Trend is weak, which lowers confidence in selling downside premium.")
+    else:
+        explanations.append("Trend is neutral, so chart direction is not adding much edge.")
+
+    if breakeven_vs_support is None:
+        explanations.append("Support relationship is unclear.")
+    elif breakeven_vs_support < 0:
+        explanations.append("Break-even sits below support, which strengthens the chart cushion.")
+    else:
+        explanations.append("Break-even sits above support, so chart-based downside cushion is weaker.")
+
+    if cushion_atr_units is None:
+        explanations.append("ATR-based cushion could not be calculated.")
+    elif cushion_atr_units >= 1.5:
+        explanations.append("Cushion is healthy relative to normal daily movement.")
+    elif cushion_atr_units >= 1.0:
+        explanations.append("Cushion is adequate relative to ATR.")
+    else:
+        explanations.append("Cushion is thin relative to ATR, so routine movement could pressure the trade.")
+
+    return {
+        "technical_score": technical_score,
+        "technical_label": label,
+        "trend_score": trend_score,
+        "support_score": support_score,
+        "atr_score": atr_score,
+        "technical_explanations": explanations,
     }
