@@ -2,12 +2,17 @@ import json
 import ast
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 
 from config import ScanConfig
 from tickers import TICKERS, TICKER_METADATA
 from providers.yfinance_market import YFinanceMarketProvider
 from recommendation_engine import build_recommendations_for_stock
-from technicals import build_technical_context, score_technical_context
+from technicals import (
+    build_technical_context,
+    score_technical_context,
+    grade_trade_separation,
+)
 
 st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
@@ -256,6 +261,38 @@ def describe_trade_setup(rec):
     return lines
 
 
+def render_price_chart(hist: pd.DataFrame, tech: dict, breakeven_price: float | None):
+    if hist is None or hist.empty:
+        st.write("Chart unavailable.")
+        return
+
+    chart_df = hist.tail(90).copy()
+    chart_df["MA20"] = chart_df["Close"].rolling(20).mean()
+    chart_df["MA50"] = chart_df["Close"].rolling(50).mean()
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(chart_df.index, chart_df["Close"], label="Close")
+    ax.plot(chart_df.index, chart_df["MA20"], label="20D MA")
+    ax.plot(chart_df.index, chart_df["MA50"], label="50D MA")
+
+    support_zone = tech.get("support_zone")
+    resistance_20d = tech.get("resistance_20d")
+
+    if support_zone is not None:
+        ax.axhline(support_zone, linestyle="--", linewidth=1, label="Support")
+    if resistance_20d is not None:
+        ax.axhline(resistance_20d, linestyle="--", linewidth=1, label="Resistance")
+    if breakeven_price is not None:
+        ax.axhline(breakeven_price, linestyle=":", linewidth=1.5, label="Break-even")
+
+    ax.set_title("Price chart with break-even and trend overlays")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.autofmt_xdate()
+
+    st.pyplot(fig)
+
+
 # ---------------------------
 # Sidebar / settings
 # ---------------------------
@@ -451,6 +488,7 @@ if run_scan:
                     hist=hist,
                     stock_price=recs[0].stock_price,
                     breakeven_price=top_contract.breakeven_price,
+                    implied_volatility=top_contract.implied_volatility,
                 )
                 tech_summary = score_technical_context(tech)
 
@@ -565,7 +603,7 @@ with tab_dashboard:
             "confidence",
         ]
         available_cols = [col for col in display_cols if col in top5.columns]
-        st.dataframe(top5[display_cols], use_container_width=True)
+        st.dataframe(top5[available_cols], use_container_width=True)
 
 
 # ---------------------------
@@ -630,7 +668,7 @@ with tab_ranked:
         ]
 
         available_cols = [col for col in display_cols if col in ranked_sorted.columns]
-        st.dataframe(ranked_sorted[display_cols], use_container_width=True)
+        st.dataframe(ranked_sorted[available_cols], use_container_width=True)
 
 
 # ---------------------------
@@ -652,6 +690,10 @@ with tab_details:
         all_symbol_recs = symbol_payload.get("recommendations", [])
         tech = symbol_payload.get("technical_context", {})
         tech_summary = symbol_payload.get("technical_summary", {})
+        separation = grade_trade_separation(
+            [rec.scores.final_score for rec in all_symbol_recs],
+            selected_rec.scores.final_score,
+        )
 
         st.markdown("## Recommended trade")
         summary_lines = describe_trade_setup(selected_rec)
@@ -695,19 +737,27 @@ with tab_details:
         tc4, tc5, tc6 = st.columns(3)
         tc4.metric("ATR(14)", fmt_num(tech.get("atr14")))
         tc5.metric("RSI(14)", fmt_num(tech.get("rsi14")))
-        tc6.metric("20D support", fmt_num(tech.get("support_20d")))
+        tc6.metric("Support zone", fmt_num(tech.get("support_zone")))
 
         tc7, tc8, tc9 = st.columns(3)
         tc7.metric("20D resistance", fmt_num(tech.get("resistance_20d")))
         tc8.metric("Distance to support", fmt_pct(tech.get("distance_to_support_pct")))
         tc9.metric("Cushion in ATRs", fmt_num(tech.get("cushion_atr_units")))
 
-        tc10, tc11 = st.columns(2)
+        tc10, tc11, tc12 = st.columns(3)
         tc10.metric("Break-even vs support", fmt_num(tech.get("breakeven_vs_support")))
-        tc11.metric(
+        tc11.metric("Realized vol (20D)", fmt_pct(tech.get("realized_vol_20d")))
+        tc12.metric("IV / RV ratio", fmt_num(tech.get("iv_rv_ratio")))
+
+        tc13 = st.columns(1)[0]
+        tc13.metric(
             "Break-even below support?",
             "Yes" if tech.get("breakeven_vs_support") is not None and tech.get("breakeven_vs_support") < 0 else "No"
         )
+
+        st.markdown("### Price chart")
+        hist = market_provider.get_price_history(selected_symbol)
+        render_price_chart(hist, tech, c.breakeven_price)
 
         st.markdown("## What the technicals mean")
         t1, t2 = st.columns(2)
@@ -729,20 +779,26 @@ with tab_details:
             )
         elif technical_score >= 80:
             st.success(
-                "Technical context is supportive. Trend, support, and ATR cushion strengthen confidence in the trade."
+                "Technical context is supportive. Trend, support, ATR cushion, and relative value strengthen confidence in the trade."
             )
         elif technical_score >= 60:
             st.info(
-                "Technical context is mildly supportive. The scanner still likes the trade, and the chart backdrop is helping rather than hurting."
+                "Technical context is mildly supportive. The scanner still likes the trade, and the chart/value backdrop is helping rather than hurting."
             )
         elif technical_score >= 40:
             st.warning(
-                "Technical context is neutral. The trade may still work, but the chart is not adding much extra edge."
+                "Technical context is neutral. The trade may still work, but the chart/value backdrop is not adding much extra edge."
             )
         else:
             st.error(
                 "Technical context is weak. That lowers confidence even if the option metrics themselves still look attractive."
             )
+
+        st.markdown("## How clearly this trade beats the alternatives")
+        s1, s2 = st.columns(2)
+        s1.metric("Trade separation", separation.get("separation_label"))
+        s2.metric("Score gap vs next best", fmt_num(separation.get("separation_gap")))
+        st.write(separation.get("separation_text"))
 
         st.markdown("## Watchouts")
         if selected_rec.top_risks:
@@ -1000,7 +1056,7 @@ This is intended to make validation faster when something looks off.
 
                 if len(lines) >= 2:
                     st.info(
-                        "This looks like tabular text. If you want, the next step can be adding a parser for tab-separated or CSV rows."
+                        "This looks like tabular text. The next step could be adding a parser for tab-separated or CSV rows."
                     )
                 else:
                     st.warning("Not enough lines detected to infer a table.")
