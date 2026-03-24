@@ -38,6 +38,7 @@ if "scan_summary" not in st.session_state:
 if "last_scan_cfg" not in st.session_state:
     st.session_state.last_scan_cfg = None
 
+
 # ---------------------------
 # Helpers
 # ---------------------------
@@ -81,8 +82,6 @@ def recommendation_to_row(rec):
         "reasons": "; ".join(rec.top_reasons),
         "risks": "; ".join(rec.top_risks),
         "warning_flags": "; ".join(rec.warning_flags),
-
-        # optional technical context fields
         "trend_state": getattr(rec, "_trend_state", None),
         "distance_to_support_pct": getattr(rec, "_distance_to_support_pct", None),
         "cushion_atr_units": getattr(rec, "_cushion_atr_units", None),
@@ -122,10 +121,6 @@ def summarize_exclusions(results_by_symbol):
 
 
 def try_parse_structured(text: str):
-    """
-    Try JSON first, then Python literal parsing.
-    Returns: (parsed_obj, parser_used, error_message)
-    """
     if not text.strip():
         return None, None, "No content pasted."
 
@@ -340,14 +335,12 @@ cfg = ScanConfig(
     strict_data_mode=strict_data_mode,
 )
 
-
 # ---------------------------
 # Tabs
 # ---------------------------
 tab_dashboard, tab_ranked, tab_details, tab_diagnostics, tab_debug = st.tabs(
     ["Dashboard", "Ranked Setups", "Contract Details", "Diagnostics", "Debug / Validation"]
 )
-
 
 if not run_scan and not st.session_state.scan_completed:
     with tab_dashboard:
@@ -416,10 +409,21 @@ if run_scan:
                 results_by_symbol[symbol]["stock_exclusion_reasons"] = stock_reasons
 
             if recs:
+                hist = market_provider.get_price_history(symbol)
+                top_contract = recs[0].selected_contract
+                tech = build_technical_context(
+                    hist=hist,
+                    stock_price=recs[0].stock_price,
+                    breakeven_price=top_contract.breakeven_price,
+                )
+
                 results_by_symbol[symbol]["recommendation_count"] = len(recs)
                 for rec in recs:
                     rec._company_name = metadata_by_symbol.get(symbol, {}).get("company_name")
                     rec._sector = metadata_by_symbol.get(symbol, {}).get("sector")
+                    rec._trend_state = tech.get("trend_state")
+                    rec._distance_to_support_pct = tech.get("distance_to_support_pct")
+                    rec._cushion_atr_units = tech.get("cushion_atr_units")
                 all_recommendations.append(recs[0])
             else:
                 if not results_by_symbol[symbol]["stock_exclusion_reasons"]:
@@ -470,59 +474,24 @@ else:
 
 
 # ---------------------------
-# Build dataframes
-# ---------------------------
-ranked_rows = []
-for rec in all_recommendations:
-    row = recommendation_to_row(rec)
-    row["company_name"] = getattr(rec, "_company_name", None)
-    row["sector"] = getattr(rec, "_sector", None)
-    ranked_rows.append(row)
-
-ranked_df = pd.DataFrame(ranked_rows)
-
-stock_excl_df, contract_excl_df = summarize_exclusions(results_by_symbol)
-
-scan_summary = {
-    "symbols_in_universe": len(symbols),
-    "symbols_with_recommendations": len(all_recommendations),
-    "symbols_without_recommendations": max(len(symbols) - len(all_recommendations), 0),
-    "total_contracts_pulled": sum(v["contract_count"] for v in results_by_symbol.values()),
-    "symbols_with_provider_errors": sum(1 for v in results_by_symbol.values() if v["exception"]),
-}
-
-
-# ---------------------------
 # Dashboard
 # ---------------------------
 with tab_dashboard:
     st.subheader("Scan Summary")
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Universe scanned", scan_summary["symbols_in_universe"])
-    c2.metric("Names with setups", scan_summary["symbols_with_recommendations"])
-    c3.metric("Names without setups", scan_summary["symbols_without_recommendations"])
-    c4.metric("Contracts pulled", scan_summary["total_contracts_pulled"])
-    c5.metric("Provider errors", scan_summary["symbols_with_provider_errors"])
+    c1.metric("Universe scanned", scan_summary.get("symbols_in_universe", 0))
+    c2.metric("Names with setups", scan_summary.get("symbols_with_recommendations", 0))
+    c3.metric("Names without setups", scan_summary.get("symbols_without_recommendations", 0))
+    c4.metric("Contracts pulled", scan_summary.get("total_contracts_pulled", 0))
+    c5.metric("Provider errors", scan_summary.get("symbols_with_provider_errors", 0))
 
     if ranked_df.empty:
         st.warning("No recommendations found for this scan.")
     else:
-        avg_yield = (
-            ranked_df["annualized_secured_yield"].dropna().mean()
-            if "annualized_secured_yield" in ranked_df
-            else None
-        )
-        avg_cushion = (
-            ranked_df["breakeven_discount_pct"].dropna().mean()
-            if "breakeven_discount_pct" in ranked_df
-            else None
-        )
-        avg_final = (
-            ranked_df["final_score"].dropna().mean()
-            if "final_score" in ranked_df
-            else None
-        )
+        avg_yield = ranked_df["annualized_secured_yield"].dropna().mean() if "annualized_secured_yield" in ranked_df else None
+        avg_cushion = ranked_df["breakeven_discount_pct"].dropna().mean() if "breakeven_discount_pct" in ranked_df else None
+        avg_final = ranked_df["final_score"].dropna().mean() if "final_score" in ranked_df else None
 
         c6, c7, c8 = st.columns(3)
         c6.metric("Avg annualized yield", fmt_pct(avg_yield))
@@ -546,6 +515,9 @@ with tab_dashboard:
             "breakeven",
             "breakeven_discount_pct",
             "annualized_secured_yield",
+            "trend_state",
+            "distance_to_support_pct",
+            "cushion_atr_units",
             "final_score",
             "confidence",
         ]
@@ -570,6 +542,8 @@ with tab_ranked:
                 "breakeven_discount_pct",
                 "stock_score",
                 "contract_score",
+                "distance_to_support_pct",
+                "cushion_atr_units",
             ],
             index=0,
         )
@@ -595,6 +569,9 @@ with tab_ranked:
             "breakeven",
             "breakeven_discount_pct",
             "annualized_secured_yield",
+            "trend_state",
+            "distance_to_support_pct",
+            "cushion_atr_units",
             "stock_score",
             "contract_score",
             "pres",
@@ -691,8 +668,7 @@ with tab_details:
         )
         st.dataframe(score_breakdown, use_container_width=True)
 
-                st.markdown("### Technical context")
-
+        st.markdown("### Technical context")
         tc1, tc2, tc3 = st.columns(3)
         tc1.metric("Trend state", tech.get("trend_state", "Unknown"))
         tc2.metric("20D MA", fmt_num(tech.get("ma20")))
@@ -714,7 +690,7 @@ with tab_details:
             "Break-even below support?",
             "Yes" if tech.get("breakeven_vs_support") is not None and tech.get("breakeven_vs_support") < 0 else "No"
         )
-        
+
         st.caption(
             "This tab currently shows the best contract per symbol from the main scan. "
             "Once we add a full per-symbol chain drill-down, this section can show all qualifying contracts for the selected stock."
