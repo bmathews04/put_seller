@@ -339,6 +339,16 @@ with st.sidebar:
 
     run_scan = st.button("Run Scan", type="primary")
 
+    if st.button("Clear cached results"):
+        st.session_state.scan_completed = False
+        st.session_state.all_recommendations = []
+        st.session_state.results_by_symbol = {}
+        st.session_state.ranked_df = pd.DataFrame()
+        st.session_state.stock_excl_df = pd.DataFrame()
+        st.session_state.contract_excl_df = pd.DataFrame()
+        st.session_state.scan_summary = {}
+        st.session_state.last_scan_cfg = None
+        st.rerun()
 
 cfg = ScanConfig(
     max_symbols_to_scan=max_symbols,
@@ -554,6 +564,7 @@ with tab_dashboard:
             "final_score",
             "confidence",
         ]
+        available_cols = [col for col in display_cols if col in top5.columns]
         st.dataframe(top5[display_cols], use_container_width=True)
 
 
@@ -618,6 +629,7 @@ with tab_ranked:
             "risks",
         ]
 
+        available_cols = [col for col in display_cols if col in ranked_sorted.columns]
         st.dataframe(ranked_sorted[display_cols], use_container_width=True)
 
 
