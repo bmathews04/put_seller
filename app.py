@@ -4,13 +4,39 @@ import pandas as pd
 import streamlit as st
 
 from config import ScanConfig
-from tickers import TICKERS
+from tickers import TICKERS, TICKER_METADATA
 from providers.yfinance_market import YFinanceMarketProvider
 from recommendation_engine import build_recommendations_for_stock
 
 
 st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
+# ---------------------------
+# Session state initialization
+# ---------------------------
+if "scan_completed" not in st.session_state:
+    st.session_state.scan_completed = False
+
+if "all_recommendations" not in st.session_state:
+    st.session_state.all_recommendations = []
+
+if "results_by_symbol" not in st.session_state:
+    st.session_state.results_by_symbol = {}
+
+if "ranked_df" not in st.session_state:
+    st.session_state.ranked_df = pd.DataFrame()
+
+if "stock_excl_df" not in st.session_state:
+    st.session_state.stock_excl_df = pd.DataFrame()
+
+if "contract_excl_df" not in st.session_state:
+    st.session_state.contract_excl_df = pd.DataFrame()
+
+if "scan_summary" not in st.session_state:
+    st.session_state.scan_summary = {}
+
+if "last_scan_cfg" not in st.session_state:
+    st.session_state.last_scan_cfg = None
 
 # ---------------------------
 # Helpers
@@ -318,7 +344,7 @@ tab_dashboard, tab_ranked, tab_details, tab_diagnostics, tab_debug = st.tabs(
 )
 
 
-if not run_scan:
+if not run_scan and not st.session_state.scan_completed:
     with tab_dashboard:
         st.info("Set your parameters in the sidebar and click **Run Scan**.")
     with tab_ranked:
@@ -335,72 +361,108 @@ if not run_scan:
 # ---------------------------
 # Data fetch / scan
 # ---------------------------
-market_provider = YFinanceMarketProvider()
+if run_scan:
+    market_provider = YFinanceMarketProvider()
 
-symbols = TICKERS[: cfg.max_symbols_to_scan] if cfg.max_symbols_to_scan else TICKERS
-metadata_by_symbol = {
-    symbol: {"company_name": None, "sector": None}
-    for symbol in symbols
-}
-
-all_recommendations = []
-results_by_symbol = {}
-
-progress = st.progress(0)
-status = st.empty()
-
-for idx, symbol in enumerate(symbols, start=1):
-    status.write(f"Scanning {symbol} ({idx}/{len(symbols)})")
-    progress.progress(idx / len(symbols))
-
-    results_by_symbol[symbol] = {
-        "stock_exclusion_reasons": [],
-        "contract_exclusion_reasons": [],
-        "contract_count": 0,
-        "recommendation_count": 0,
-        "exception": None,
+    symbols = TICKERS[: cfg.max_symbols_to_scan] if cfg.max_symbols_to_scan else TICKERS
+    metadata_by_symbol = {
+        symbol: TICKER_METADATA.get(symbol, {"company_name": None, "sector": None})
+        for symbol in symbols
     }
 
-    try:
-        metrics = market_provider.get_stock_metrics(symbol)
-        contracts = market_provider.get_option_contracts(symbol)
+    all_recommendations = []
+    results_by_symbol = {}
 
-        results_by_symbol[symbol]["contract_count"] = len(contracts)
+    progress = st.progress(0)
+    status = st.empty()
 
-        if not contracts:
-            results_by_symbol[symbol]["stock_exclusion_reasons"].append("no_option_chain")
-            continue
+    for idx, symbol in enumerate(symbols, start=1):
+        status.write(f"Scanning {symbol} ({idx}/{len(symbols)})")
+        progress.progress(idx / len(symbols))
 
-        recs = build_recommendations_for_stock(metrics, contracts, cfg)
+        results_by_symbol[symbol] = {
+            "stock_exclusion_reasons": [],
+            "contract_exclusion_reasons": [],
+            "contract_count": 0,
+            "recommendation_count": 0,
+            "exception": None,
+        }
 
-        contract_reason_lists = []
-        for c in contracts:
-            reasons = getattr(c, "contract_exclusion_reasons", [])
-            if reasons:
-                contract_reason_lists.append(reasons)
-        results_by_symbol[symbol]["contract_exclusion_reasons"] = contract_reason_lists
+        try:
+            metrics = market_provider.get_stock_metrics(symbol)
+            contracts = market_provider.get_option_contracts(symbol)
 
-        stock_reasons = getattr(metrics, "stock_exclusion_reasons", [])
-        if stock_reasons:
-            results_by_symbol[symbol]["stock_exclusion_reasons"] = stock_reasons
+            results_by_symbol[symbol]["contract_count"] = len(contracts)
 
-        if recs:
-            results_by_symbol[symbol]["recommendation_count"] = len(recs)
-            for rec in recs:
-                rec._company_name = metadata_by_symbol.get(symbol, {}).get("company_name")
-                rec._sector = metadata_by_symbol.get(symbol, {}).get("sector")
-            all_recommendations.append(recs[0])
-        else:
-            if not results_by_symbol[symbol]["stock_exclusion_reasons"]:
-                results_by_symbol[symbol]["stock_exclusion_reasons"].append("no_valid_contracts")
+            if not contracts:
+                results_by_symbol[symbol]["stock_exclusion_reasons"].append("no_option_chain")
+                continue
 
-    except Exception as e:
-        results_by_symbol[symbol]["exception"] = str(e)
+            recs = build_recommendations_for_stock(metrics, contracts, cfg)
 
-progress.empty()
-status.empty()
+            contract_reason_lists = []
+            for c in contracts:
+                reasons = getattr(c, "contract_exclusion_reasons", [])
+                if reasons:
+                    contract_reason_lists.append(reasons)
+            results_by_symbol[symbol]["contract_exclusion_reasons"] = contract_reason_lists
 
-all_recommendations.sort(key=lambda r: r.scores.final_score, reverse=True)
+            stock_reasons = getattr(metrics, "stock_exclusion_reasons", [])
+            if stock_reasons:
+                results_by_symbol[symbol]["stock_exclusion_reasons"] = stock_reasons
+
+            if recs:
+                results_by_symbol[symbol]["recommendation_count"] = len(recs)
+                for rec in recs:
+                    rec._company_name = metadata_by_symbol.get(symbol, {}).get("company_name")
+                    rec._sector = metadata_by_symbol.get(symbol, {}).get("sector")
+                all_recommendations.append(recs[0])
+            else:
+                if not results_by_symbol[symbol]["stock_exclusion_reasons"]:
+                    results_by_symbol[symbol]["stock_exclusion_reasons"].append("no_valid_contracts")
+
+        except Exception as e:
+            results_by_symbol[symbol]["exception"] = str(e)
+
+    progress.empty()
+    status.empty()
+
+    all_recommendations.sort(key=lambda r: r.scores.final_score, reverse=True)
+
+    ranked_rows = []
+    for rec in all_recommendations:
+        row = recommendation_to_row(rec)
+        row["company_name"] = getattr(rec, "_company_name", None)
+        row["sector"] = getattr(rec, "_sector", None)
+        ranked_rows.append(row)
+
+    ranked_df = pd.DataFrame(ranked_rows)
+    stock_excl_df, contract_excl_df = summarize_exclusions(results_by_symbol)
+
+    scan_summary = {
+        "symbols_in_universe": len(symbols),
+        "symbols_with_recommendations": len(all_recommendations),
+        "symbols_without_recommendations": max(len(symbols) - len(all_recommendations), 0),
+        "total_contracts_pulled": sum(v["contract_count"] for v in results_by_symbol.values()),
+        "symbols_with_provider_errors": sum(1 for v in results_by_symbol.values() if v["exception"]),
+    }
+
+    st.session_state.all_recommendations = all_recommendations
+    st.session_state.results_by_symbol = results_by_symbol
+    st.session_state.ranked_df = ranked_df
+    st.session_state.stock_excl_df = stock_excl_df
+    st.session_state.contract_excl_df = contract_excl_df
+    st.session_state.scan_summary = scan_summary
+    st.session_state.scan_completed = True
+    st.session_state.last_scan_cfg = cfg
+
+else:
+    all_recommendations = st.session_state.all_recommendations
+    results_by_symbol = st.session_state.results_by_symbol
+    ranked_df = st.session_state.ranked_df
+    stock_excl_df = st.session_state.stock_excl_df
+    contract_excl_df = st.session_state.contract_excl_df
+    scan_summary = st.session_state.scan_summary
 
 
 # ---------------------------
