@@ -9,6 +9,11 @@ from greeks import black_scholes_put_delta
 from models import OptionContract
 from providers.yfinance_fundamentals import YFinanceFundamentalsProvider
 
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_price_history(symbol: str, period: str = "6mo", interval: str = "1d"):
+    ticker = yf.Ticker(symbol)
+    hist = ticker.history(period=period, interval=interval, auto_adjust=False)
+    return hist.copy()
 
 @st.cache_data(ttl=900, show_spinner=False)
 def _cached_stock_metrics(symbol: str):
@@ -24,6 +29,9 @@ def _cached_option_chain(symbol: str, exp_str: str):
 
 
 class YFinanceMarketProvider:
+    def get_price_history(self, symbol: str, period: str = "6mo", interval: str = "1d"):
+        return _cached_price_history(symbol, period, interval)
+    
     def __init__(self, risk_free_rate: float = 0.045) -> None:
         self.fundamentals = YFinanceFundamentalsProvider()
         self.risk_free_rate = risk_free_rate
