@@ -7,7 +7,7 @@ from config import ScanConfig
 from tickers import TICKERS, TICKER_METADATA
 from providers.yfinance_market import YFinanceMarketProvider
 from recommendation_engine import build_recommendations_for_stock
-from technicals import build_technical_context
+from technicals import build_technical_context, score_technical_context
 
 st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
@@ -85,6 +85,8 @@ def recommendation_to_row(rec):
         "trend_state": getattr(rec, "_trend_state", None),
         "distance_to_support_pct": getattr(rec, "_distance_to_support_pct", None),
         "cushion_atr_units": getattr(rec, "_cushion_atr_units", None),
+        "technical_score": getattr(rec, "_technical_score", None),
+        "technical_label": getattr(rec, "_technical_label", None),
     }
 
 
@@ -232,6 +234,26 @@ def validate_recommendation_like(obj):
             findings.append((key, "Not present"))
 
     return pd.DataFrame(findings, columns=["check", "result"])
+
+
+def describe_trade_setup(rec):
+    contract = rec.selected_contract
+    reasons = rec.top_reasons[:3] if rec.top_reasons else []
+
+    lines = []
+    lines.append(
+        f"Sell to open the {rec.symbol} {contract.expiration_date} {fmt_num(contract.strike)} put around {fmt_num(rec.suggested_entry_limit)}."
+    )
+
+    if reasons:
+        joined = ", ".join(r.lower() for r in reasons)
+        lines.append(f"This stands out because of {joined}.")
+
+    lines.append(
+        f"Your break-even is {fmt_num(contract.breakeven_price)}, and the standard profit-taking level is {fmt_num(rec.profit_take_debit)}."
+    )
+
+    return lines
 
 
 # ---------------------------
@@ -382,6 +404,9 @@ if run_scan:
             "contract_exclusion_reasons": [],
             "contract_count": 0,
             "recommendation_count": 0,
+            "recommendations": [],
+            "technical_context": {},
+            "technical_summary": {},
             "exception": None,
         }
 
@@ -411,19 +436,28 @@ if run_scan:
             if recs:
                 hist = market_provider.get_price_history(symbol)
                 top_contract = recs[0].selected_contract
+
                 tech = build_technical_context(
                     hist=hist,
                     stock_price=recs[0].stock_price,
                     breakeven_price=top_contract.breakeven_price,
                 )
+                tech_summary = score_technical_context(tech)
 
                 results_by_symbol[symbol]["recommendation_count"] = len(recs)
+                results_by_symbol[symbol]["recommendations"] = recs
+                results_by_symbol[symbol]["technical_context"] = tech
+                results_by_symbol[symbol]["technical_summary"] = tech_summary
+
                 for rec in recs:
                     rec._company_name = metadata_by_symbol.get(symbol, {}).get("company_name")
                     rec._sector = metadata_by_symbol.get(symbol, {}).get("sector")
                     rec._trend_state = tech.get("trend_state")
                     rec._distance_to_support_pct = tech.get("distance_to_support_pct")
                     rec._cushion_atr_units = tech.get("cushion_atr_units")
+                    rec._technical_score = tech_summary.get("technical_score")
+                    rec._technical_label = tech_summary.get("technical_label")
+
                 all_recommendations.append(recs[0])
             else:
                 if not results_by_symbol[symbol]["stock_exclusion_reasons"]:
@@ -516,8 +550,7 @@ with tab_dashboard:
             "breakeven_discount_pct",
             "annualized_secured_yield",
             "trend_state",
-            "distance_to_support_pct",
-            "cushion_atr_units",
+            "technical_label",
             "final_score",
             "confidence",
         ]
@@ -544,6 +577,7 @@ with tab_ranked:
                 "contract_score",
                 "distance_to_support_pct",
                 "cushion_atr_units",
+                "technical_score",
             ],
             index=0,
         )
@@ -572,6 +606,8 @@ with tab_ranked:
             "trend_state",
             "distance_to_support_pct",
             "cushion_atr_units",
+            "technical_score",
+            "technical_label",
             "stock_score",
             "contract_score",
             "pres",
@@ -600,75 +636,45 @@ with tab_details:
         selected_rec = next(rec for rec in all_recommendations if rec.symbol == selected_symbol)
         c = selected_rec.selected_contract
 
-        hist = market_provider.get_price_history(selected_symbol)
-        tech = build_technical_context(
-            hist=hist,
-            stock_price=selected_rec.stock_price,
-            breakeven_price=c.breakeven_price,
-        )
+        symbol_payload = results_by_symbol.get(selected_symbol, {})
+        all_symbol_recs = symbol_payload.get("recommendations", [])
+        tech = symbol_payload.get("technical_context", {})
+        tech_summary = symbol_payload.get("technical_summary", {})
 
-        left, mid, right = st.columns(3)
-        left.metric("Selected setup", f"{selected_rec.symbol} {c.expiration_date} {fmt_num(c.strike)}P")
-        mid.metric("Suggested entry", fmt_num(selected_rec.suggested_entry_limit))
-        right.metric("Confidence", selected_rec.confidence_level)
+        st.markdown("## Recommended trade")
+        summary_lines = describe_trade_setup(selected_rec)
+        for line in summary_lines:
+            st.write(line)
 
-        left2, mid2, right2 = st.columns(3)
-        left2.metric("Break-even", fmt_num(c.breakeven_price))
-        mid2.metric("Break-even cushion", fmt_pct(c.breakeven_discount_pct))
-        right2.metric("Annualized secured yield", fmt_pct(c.annualized_secured_yield))
+        a1, a2, a3, a4, a5 = st.columns(5)
+        a1.metric("Contract", f"{selected_rec.symbol} {fmt_num(c.strike)}P")
+        a2.metric("Suggested entry", fmt_num(selected_rec.suggested_entry_limit))
+        a3.metric("50% take-profit", fmt_num(selected_rec.profit_take_debit))
+        a4.metric("Break-even", fmt_num(c.breakeven_price))
+        a5.metric("Confidence", selected_rec.confidence_level)
 
-        left3, mid3, right3 = st.columns(3)
-        left3.metric("50% take-profit debit", fmt_num(selected_rec.profit_take_debit))
-        mid3.metric("Fast take-profit debit", fmt_num(selected_rec.fast_profit_take_debit))
-        right3.metric("Defensive review price", fmt_num(selected_rec.defensive_review_price))
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Annualized yield", fmt_pct(c.annualized_secured_yield))
+        b2.metric("Break-even cushion", fmt_pct(c.breakeven_discount_pct))
+        b3.metric("Defensive review", fmt_num(selected_rec.defensive_review_price))
 
-        st.markdown("### Why it ranked well")
+        st.markdown("## Why this setup stands out")
         if selected_rec.top_reasons:
             for reason in selected_rec.top_reasons:
                 st.write(f"- {reason}")
         else:
-            st.write("—")
+            st.write("No key strengths available.")
 
-        st.markdown("### Risks / watchouts")
-        if selected_rec.top_risks:
-            for risk in selected_rec.top_risks:
-                st.write(f"- {risk}")
-        else:
-            st.write("—")
+        st.markdown("## Trade plan")
+        st.write(f"- Try to enter around **{fmt_num(selected_rec.suggested_entry_limit)}**.")
+        st.write(f"- Standard profit-taking level: **buy to close near {fmt_num(selected_rec.profit_take_debit)}**.")
+        st.write(f"- Faster/aggressive take-profit level: **{fmt_num(selected_rec.fast_profit_take_debit)}**.")
+        st.write(f"- Review the trade if the stock approaches **{fmt_num(selected_rec.defensive_review_price)}**.")
+        if selected_rec.entry_notes:
+            st.write(f"- Entry note: {selected_rec.entry_notes}")
 
-        st.markdown("### Entry notes")
-        st.write(selected_rec.entry_notes or "—")
+        st.markdown("## Chart / technical read")
 
-        st.markdown("### Management plan")
-        st.write(selected_rec.management_plan_text or "—")
-
-        st.markdown("### Warning flags")
-        if selected_rec.warning_flags:
-            st.write(", ".join(selected_rec.warning_flags))
-        else:
-            st.write("None")
-
-        st.markdown("### Score breakdown")
-        score_breakdown = pd.DataFrame(
-            [
-                {"component": "quality_score", "value": selected_rec.scores.quality_score},
-                {"component": "event_stability_score", "value": selected_rec.scores.event_stability_score},
-                {"component": "options_market_quality_score", "value": selected_rec.scores.options_market_quality_score},
-                {"component": "assignment_comfort_score", "value": selected_rec.scores.assignment_comfort_score},
-                {"component": "stock_score_total", "value": selected_rec.scores.stock_score_total},
-                {"component": "breakeven_score", "value": selected_rec.scores.breakeven_score},
-                {"component": "secured_yield_score", "value": selected_rec.scores.secured_yield_score},
-                {"component": "delta_fit_score", "value": selected_rec.scores.delta_fit_score},
-                {"component": "liquidity_score", "value": selected_rec.scores.liquidity_score},
-                {"component": "dte_fit_score", "value": selected_rec.scores.dte_fit_score},
-                {"component": "contract_score_total", "value": selected_rec.scores.contract_score_total},
-                {"component": "pres_normalized", "value": selected_rec.scores.pres_normalized},
-                {"component": "final_score", "value": selected_rec.scores.final_score},
-            ]
-        )
-        st.dataframe(score_breakdown, use_container_width=True)
-
-        st.markdown("### Technical context")
         tc1, tc2, tc3 = st.columns(3)
         tc1.metric("Trend state", tech.get("trend_state", "Unknown"))
         tc2.metric("20D MA", fmt_num(tech.get("ma20")))
@@ -691,10 +697,125 @@ with tab_details:
             "Yes" if tech.get("breakeven_vs_support") is not None and tech.get("breakeven_vs_support") < 0 else "No"
         )
 
-        st.caption(
-            "This tab currently shows the best contract per symbol from the main scan. "
-            "Once we add a full per-symbol chain drill-down, this section can show all qualifying contracts for the selected stock."
-        )
+        st.markdown("## What the technicals mean")
+        t1, t2 = st.columns(2)
+        t1.metric("Technical context score", fmt_num(tech_summary.get("technical_score")))
+        t2.metric("Technical context label", tech_summary.get("technical_label", "Unknown"))
+
+        explanations = tech_summary.get("technical_explanations", [])
+        if explanations:
+            for item in explanations:
+                st.write(f"- {item}")
+        else:
+            st.write("No technical interpretation available.")
+
+        st.markdown("## How this affects confidence")
+        technical_score = tech_summary.get("technical_score")
+        if technical_score is None:
+            st.write(
+                "Technical context could not be fully assessed, so confidence is being driven mostly by liquidity, yield, and break-even factors."
+            )
+        elif technical_score >= 80:
+            st.success(
+                "Technical context is supportive. Trend, support, and ATR cushion strengthen confidence in the trade."
+            )
+        elif technical_score >= 60:
+            st.info(
+                "Technical context is mildly supportive. The scanner still likes the trade, and the chart backdrop is helping rather than hurting."
+            )
+        elif technical_score >= 40:
+            st.warning(
+                "Technical context is neutral. The trade may still work, but the chart is not adding much extra edge."
+            )
+        else:
+            st.error(
+                "Technical context is weak. That lowers confidence even if the option metrics themselves still look attractive."
+            )
+
+        st.markdown("## Watchouts")
+        if selected_rec.top_risks:
+            for risk in selected_rec.top_risks:
+                st.write(f"- {risk}")
+        else:
+            st.write("No major watchouts identified.")
+
+        if selected_rec.warning_flags:
+            st.write(f"Warning flags: {', '.join(selected_rec.warning_flags)}")
+
+        st.markdown("## Other valid puts on this stock")
+        if not all_symbol_recs:
+            st.write("No qualifying contracts stored for this stock.")
+        else:
+            contract_rows = []
+            for rec in all_symbol_recs:
+                contract = rec.selected_contract
+                contract_rows.append(
+                    {
+                        "symbol": rec.symbol,
+                        "expiration": contract.expiration_date,
+                        "dte": contract.dte,
+                        "strike": contract.strike,
+                        "delta_abs": contract.delta_abs,
+                        "premium": contract.premium,
+                        "entry_limit": rec.suggested_entry_limit,
+                        "entry_low": rec.acceptable_entry_low,
+                        "entry_high": rec.acceptable_entry_high,
+                        "breakeven": contract.breakeven_price,
+                        "breakeven_discount_pct": contract.breakeven_discount_pct,
+                        "annualized_secured_yield": contract.annualized_secured_yield,
+                        "profit_take_debit": rec.profit_take_debit,
+                        "fast_profit_take_debit": rec.fast_profit_take_debit,
+                        "contract_score": rec.scores.contract_score_total,
+                        "pres": rec.scores.pres_normalized,
+                        "final_score": rec.scores.final_score,
+                        "confidence": rec.confidence_level,
+                        "technical_label": getattr(rec, "_technical_label", None),
+                        "reasons": "; ".join(rec.top_reasons),
+                        "risks": "; ".join(rec.top_risks),
+                    }
+                )
+
+            contract_df = pd.DataFrame(contract_rows)
+
+            contract_sort = st.selectbox(
+                "Sort contracts by",
+                options=[
+                    "final_score",
+                    "pres",
+                    "annualized_secured_yield",
+                    "breakeven_discount_pct",
+                    "contract_score",
+                    "delta_abs",
+                    "dte",
+                ],
+                index=0,
+                key="contract_sort_select",
+            )
+
+            contract_df = contract_df.sort_values(contract_sort, ascending=False).reset_index(drop=True)
+            contract_df.insert(0, "rank", range(1, len(contract_df) + 1))
+
+            st.dataframe(contract_df, use_container_width=True)
+
+        with st.expander("Advanced scoring details"):
+            score_breakdown = pd.DataFrame(
+                [
+                    {"component": "quality_score", "value": selected_rec.scores.quality_score},
+                    {"component": "event_stability_score", "value": selected_rec.scores.event_stability_score},
+                    {"component": "options_market_quality_score", "value": selected_rec.scores.options_market_quality_score},
+                    {"component": "assignment_comfort_score", "value": selected_rec.scores.assignment_comfort_score},
+                    {"component": "stock_score_total", "value": selected_rec.scores.stock_score_total},
+                    {"component": "breakeven_score", "value": selected_rec.scores.breakeven_score},
+                    {"component": "secured_yield_score", "value": selected_rec.scores.secured_yield_score},
+                    {"component": "delta_fit_score", "value": selected_rec.scores.delta_fit_score},
+                    {"component": "liquidity_score", "value": selected_rec.scores.liquidity_score},
+                    {"component": "dte_fit_score", "value": selected_rec.scores.dte_fit_score},
+                    {"component": "contract_score_total", "value": selected_rec.scores.contract_score_total},
+                    {"component": "pres_normalized", "value": selected_rec.scores.pres_normalized},
+                    {"component": "final_score", "value": selected_rec.scores.final_score},
+                ]
+            )
+            st.dataframe(score_breakdown, use_container_width=True)
 
 
 # ---------------------------
