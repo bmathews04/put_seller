@@ -7,7 +7,7 @@ from config import ScanConfig
 from tickers import TICKERS, TICKER_METADATA
 from providers.yfinance_market import YFinanceMarketProvider
 from recommendation_engine import build_recommendations_for_stock
-
+from technicals import build_technical_context
 
 st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
@@ -81,6 +81,11 @@ def recommendation_to_row(rec):
         "reasons": "; ".join(rec.top_reasons),
         "risks": "; ".join(rec.top_risks),
         "warning_flags": "; ".join(rec.warning_flags),
+
+        # optional technical context fields
+        "trend_state": getattr(rec, "_trend_state", None),
+        "distance_to_support_pct": getattr(rec, "_distance_to_support_pct", None),
+        "cushion_atr_units": getattr(rec, "_cushion_atr_units", None),
     }
 
 
@@ -618,6 +623,13 @@ with tab_details:
         selected_rec = next(rec for rec in all_recommendations if rec.symbol == selected_symbol)
         c = selected_rec.selected_contract
 
+        hist = market_provider.get_price_history(selected_symbol)
+        tech = build_technical_context(
+            hist=hist,
+            stock_price=selected_rec.stock_price,
+            breakeven_price=c.breakeven_price,
+        )
+
         left, mid, right = st.columns(3)
         left.metric("Selected setup", f"{selected_rec.symbol} {c.expiration_date} {fmt_num(c.strike)}P")
         mid.metric("Suggested entry", fmt_num(selected_rec.suggested_entry_limit))
@@ -679,6 +691,30 @@ with tab_details:
         )
         st.dataframe(score_breakdown, use_container_width=True)
 
+                st.markdown("### Technical context")
+
+        tc1, tc2, tc3 = st.columns(3)
+        tc1.metric("Trend state", tech.get("trend_state", "Unknown"))
+        tc2.metric("20D MA", fmt_num(tech.get("ma20")))
+        tc3.metric("50D MA", fmt_num(tech.get("ma50")))
+
+        tc4, tc5, tc6 = st.columns(3)
+        tc4.metric("ATR(14)", fmt_num(tech.get("atr14")))
+        tc5.metric("RSI(14)", fmt_num(tech.get("rsi14")))
+        tc6.metric("20D support", fmt_num(tech.get("support_20d")))
+
+        tc7, tc8, tc9 = st.columns(3)
+        tc7.metric("20D resistance", fmt_num(tech.get("resistance_20d")))
+        tc8.metric("Distance to support", fmt_pct(tech.get("distance_to_support_pct")))
+        tc9.metric("Cushion in ATRs", fmt_num(tech.get("cushion_atr_units")))
+
+        tc10, tc11 = st.columns(2)
+        tc10.metric("Break-even vs support", fmt_num(tech.get("breakeven_vs_support")))
+        tc11.metric(
+            "Break-even below support?",
+            "Yes" if tech.get("breakeven_vs_support") is not None and tech.get("breakeven_vs_support") < 0 else "No"
+        )
+        
         st.caption(
             "This tab currently shows the best contract per symbol from the main scan. "
             "Once we add a full per-symbol chain drill-down, this section can show all qualifying contracts for the selected stock."
