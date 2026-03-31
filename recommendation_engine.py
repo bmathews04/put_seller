@@ -122,7 +122,13 @@ def assign_confidence(
     return "Low"
 
 
-def build_reasons_and_risks(metrics: StockMetrics, contract: OptionContract, stock_scores: ScoreCard, contract_scores: ScoreCard):
+def build_reasons_and_risks(
+    metrics: StockMetrics,
+    contract: OptionContract,
+    stock_scores: ScoreCard,
+    contract_scores: ScoreCard,
+    cfg: ScanConfig,
+):
     positives = []
     negatives = []
     flags = []
@@ -132,15 +138,23 @@ def build_reasons_and_risks(metrics: StockMetrics, contract: OptionContract, sto
     positives.append((contract_scores.secured_yield_score, "Attractive secured yield"))
     positives.append((contract_scores.delta_fit_score, "Delta sits near the preferred range"))
     positives.append((contract_scores.liquidity_score, "Options market looks tradable"))
-    positives.append((stock_scores.event_stability_score, "No obvious near-term event pressure"))
+
+    if cfg.exclude_earnings_before_expiry:
+        positives.append((stock_scores.event_stability_score, "No earnings event inside the trade window"))
+    else:
+        positives.append((stock_scores.event_stability_score, "No obvious near-term event pressure"))
 
     if not metrics.quality_data_complete:
         negatives.append((80, "Quality score used fallback data"))
         flags.append("quality_data_incomplete")
 
-    if metrics.earnings_date is None:
-        negatives.append((75, "Earnings date is unknown"))
-        flags.append("earnings_unknown")
+    if not cfg.exclude_earnings_before_expiry:
+        if metrics.earnings_date is None or metrics.days_to_earnings is None:
+            negatives.append((75, "Earnings date is unknown"))
+            flags.append("earnings_unknown")
+        elif metrics.days_to_earnings <= contract.dte:
+            negatives.append((85, "Earnings may occur before expiry"))
+            flags.append("earnings_before_expiry")
 
     if contract.spread_pct is not None and contract.spread_pct > 0.10:
         negatives.append((70, "Spread is on the wider side"))
@@ -267,6 +281,7 @@ def build_recommendations_for_stock(metrics: StockMetrics, raw_contracts: list[O
             contract=contract,
             stock_scores=stock_scores,
             contract_scores=c_score,
+            cfg=cfg,
         )
 
         recommendations.append(
