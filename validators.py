@@ -63,13 +63,26 @@ def validate_contract(
     if contract.bid < 0 or contract.ask < 0 or contract.ask < contract.bid:
         contract.contract_valid = False
         contract.contract_exclusion_reasons.append("invalid_bid_ask")
+        return contract
 
-    # Fix 2: enforce minimum bid as a true hard filter
     if contract.bid < cfg.min_bid:
         contract.contract_valid = False
         contract.contract_exclusion_reasons.append("bid_below_min")
 
-    # Fix 1: enforce earnings exclusion as a true contract-level rule
+    # Premium is now a true validator-level hard filter
+    if contract.premium is None:
+        contract.contract_valid = False
+        contract.contract_exclusion_reasons.append("missing_premium")
+    elif contract.premium < cfg.min_premium:
+        contract.contract_valid = False
+        contract.contract_exclusion_reasons.append("premium_too_low")
+
+    # Spread is now a true validator-level hard filter
+    if contract.spread_pct is not None and contract.spread_pct > cfg.max_spread_pct:
+        contract.contract_valid = False
+        contract.contract_exclusion_reasons.append("spread_too_wide")
+
+    # Enforce earnings exclusion as a true contract-level rule
     if cfg.exclude_earnings_before_expiry and metrics is not None:
         if metrics.days_to_earnings is None:
             contract.contract_valid = False
