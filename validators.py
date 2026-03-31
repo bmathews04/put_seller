@@ -26,7 +26,11 @@ def validate_stock(metrics: StockMetrics, cfg: ScanConfig) -> StockMetrics:
     return metrics
 
 
-def validate_contract(contract: OptionContract, cfg: ScanConfig) -> OptionContract:
+def validate_contract(
+    contract: OptionContract,
+    cfg: ScanConfig,
+    metrics: StockMetrics | None = None,
+) -> OptionContract:
     contract.contract_valid = True
     contract.contract_exclusion_reasons = []
 
@@ -60,21 +64,31 @@ def validate_contract(contract: OptionContract, cfg: ScanConfig) -> OptionContra
         contract.contract_valid = False
         contract.contract_exclusion_reasons.append("invalid_bid_ask")
 
+    # Enforce earnings exclusion as a true contract-level rule
+    if cfg.exclude_earnings_before_expiry and metrics is not None:
+        if metrics.days_to_earnings is None:
+            contract.contract_valid = False
+            contract.contract_exclusion_reasons.append("earnings_date_unknown")
+        elif metrics.days_to_earnings <= contract.dte:
+            contract.contract_valid = False
+            contract.contract_exclusion_reasons.append("earnings_before_expiry")
+
     if contract.open_interest is None and contract.volume is None:
         contract.contract_valid = False
         contract.contract_exclusion_reasons.append("missing_oi_and_volume")
         return contract
 
-    if contract.open_interest is not None and contract.open_interest < cfg.min_open_interest:
-        contract.contract_exclusion_reasons.append("oi_below_min")
-
-    if contract.volume is not None and contract.volume < cfg.min_volume:
-        contract.contract_exclusion_reasons.append("volume_below_min")
-
     if cfg.strict_data_mode:
+        if contract.open_interest is None or contract.open_interest < cfg.min_open_interest:
+            contract.contract_valid = False
+            contract.contract_exclusion_reasons.append("oi_below_min")
+        if contract.volume is None or contract.volume < cfg.min_volume:
+            contract.contract_valid = False
+            contract.contract_exclusion_reasons.append("volume_below_min")
+    else:
         if contract.open_interest is not None and contract.open_interest < cfg.min_open_interest:
-            contract.contract_valid = False
+            contract.contract_exclusion_reasons.append("oi_below_min")
         if contract.volume is not None and contract.volume < cfg.min_volume:
-            contract.contract_valid = False
+            contract.contract_exclusion_reasons.append("volume_below_min")
 
     return contract
