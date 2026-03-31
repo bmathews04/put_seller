@@ -80,14 +80,25 @@ def build_management_plan(stock_price: float, contract: OptionContract, cfg: Sca
     )
 
 
-def assign_confidence(metrics: StockMetrics, contract: OptionContract, stock_score: ScoreCard, contract_score: ScoreCard) -> str:
+def assign_confidence(
+    metrics: StockMetrics,
+    contract: OptionContract,
+    stock_score: ScoreCard,
+    contract_score: ScoreCard,
+    cfg: ScanConfig,
+) -> str:
     concerns = 0
 
     if not metrics.quality_data_complete:
         concerns += 1
 
-    if metrics.earnings_date is None:
-        concerns += 2
+    # Only treat earnings uncertainty as a confidence concern
+    # when earnings exclusion is NOT already enforced as a hard rule.
+    if not cfg.exclude_earnings_before_expiry:
+        if metrics.earnings_date is None or metrics.days_to_earnings is None:
+            concerns += 2
+        elif metrics.days_to_earnings <= contract.dte:
+            concerns += 2
 
     if contract.spread_pct is not None and contract.spread_pct > 0.10:
         concerns += 1
@@ -95,7 +106,13 @@ def assign_confidence(metrics: StockMetrics, contract: OptionContract, stock_sco
     if contract_score.liquidity_score < 55:
         concerns += 1
 
-    if stock_score.event_stability_score < 50:
+    if contract.delta_abs is not None and contract.delta_abs > 0.20:
+        concerns += 1
+
+    if stock_score.stock_score_total < 55:
+        concerns += 1
+
+    if contract_score.contract_score_total < 55:
         concerns += 1
 
     if concerns <= 1:
@@ -272,7 +289,7 @@ def build_recommendations_for_stock(metrics: StockMetrics, raw_contracts: list[O
                 top_reasons=top_reasons,
                 top_risks=top_risks,
                 warning_flags=flags,
-                confidence_level=assign_confidence(metrics, contract, stock_scores, c_score),
+                confidence_level=assign_confidence(metrics, contract, stock_scores, c_score, cfg),
             )
         )
 
