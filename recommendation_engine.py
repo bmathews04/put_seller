@@ -173,14 +173,6 @@ def build_recommendations_for_stock(metrics: StockMetrics, raw_contracts: list[O
         contract = derive_contract_metrics(raw_contract, metrics.stock_price)
         contract = validate_contract(contract, cfg, metrics)
 
-        if contract.premium is None or contract.premium < cfg.min_premium:
-            contract.contract_valid = False
-            contract.contract_exclusion_reasons.append("premium_too_low")
-
-        if contract.spread_pct is not None and contract.spread_pct > cfg.max_spread_pct:
-            contract.contract_valid = False
-            contract.contract_exclusion_reasons.append("spread_too_wide")
-
         if contract.contract_valid:
             valid_contracts.append(contract)
 
