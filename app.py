@@ -455,11 +455,15 @@ if run_scan:
             "technical_context": {},
             "technical_summary": {},
             "exception": None,
+            "provider_detail_errors": [],
         }
 
         try:
             metrics = market_provider.get_stock_metrics(symbol)
             contracts = market_provider.get_option_contracts(symbol, cfg)
+            results_by_symbol[symbol]["provider_detail_errors"] = list(
+                getattr(market_provider, "last_errors", [])
+            )
 
             results_by_symbol[symbol]["contract_count"] = len(contracts)
 
@@ -534,7 +538,11 @@ if run_scan:
         "symbols_with_recommendations": len(all_recommendations),
         "symbols_without_recommendations": max(len(symbols) - len(all_recommendations), 0),
         "total_contracts_pulled": sum(v["contract_count"] for v in results_by_symbol.values()),
-        "symbols_with_provider_errors": sum(1 for v in results_by_symbol.values() if v["exception"]),
+        "symbols_with_provider_errors": sum(
+            1
+            for v in results_by_symbol.values()
+            if v.get("exception") or v.get("provider_detail_errors")
+        ),
     }
 
     st.session_state.all_recommendations = all_recommendations
@@ -909,28 +917,70 @@ with tab_diagnostics:
             st.dataframe(contract_excl_df, use_container_width=True)
 
     st.markdown("### Provider errors")
-    error_rows = []
+
+    provider_rows = []
     for symbol, payload in results_by_symbol.items():
         if payload.get("exception"):
-            error_rows.append({"symbol": symbol, "error": payload["exception"]})
+            provider_rows.append(
+                {
+                    "symbol": symbol,
+                    "error_type": "top_level_exception",
+                    "error": payload["exception"],
+                }
+            )
 
-    if error_rows:
-        st.dataframe(pd.DataFrame(error_rows), use_container_width=True)
+        for detail_error in payload.get("provider_detail_errors", []):
+            provider_rows.append(
+                {
+                    "symbol": symbol,
+                    "error_type": "provider_detail",
+                    "error": detail_error,
+                }
+            )
+
+    if provider_rows:
+        provider_errors_df = pd.DataFrame(provider_rows)
+        st.dataframe(provider_errors_df, use_container_width=True)
+
+        with st.expander("Provider error counts by type"):
+            summary_df = (
+                provider_errors_df.groupby("error_type", dropna=False)
+                .size()
+                .reset_index(name="count")
+                .sort_values("count", ascending=False)
+            )
+            st.dataframe(summary_df, use_container_width=True)
     else:
         st.write("No provider errors.")
 
     st.markdown("### Per-symbol scan summary")
+    show_only_symbols_with_issues = st.checkbox(
+        "Show only symbols with issues",
+        value=False,
+        help="Filter to symbols with provider errors, stock exclusions, or zero recommendations.",
+    )
+
     per_symbol_rows = []
     for symbol, payload in results_by_symbol.items():
-        per_symbol_rows.append(
-            {
-                "symbol": symbol,
-                "contracts_pulled": payload.get("contract_count", 0),
-                "recommendation_count": payload.get("recommendation_count", 0),
-                "stock_exclusion_reasons": "; ".join(payload.get("stock_exclusion_reasons", [])),
-                "provider_error": payload.get("exception"),
-            }
+        row = {
+            "symbol": symbol,
+            "contracts_pulled": payload.get("contract_count", 0),
+            "recommendation_count": payload.get("recommendation_count", 0),
+            "stock_exclusion_reasons": "; ".join(payload.get("stock_exclusion_reasons", [])),
+            "provider_error": payload.get("exception"),
+            "provider_detail_error_count": len(payload.get("provider_detail_errors", [])),
+            "provider_detail_errors": "; ".join(payload.get("provider_detail_errors", [])),
+        }
+
+        has_issue = (
+            bool(payload.get("exception"))
+            or bool(payload.get("provider_detail_errors"))
+            or bool(payload.get("stock_exclusion_reasons"))
+            or payload.get("recommendation_count", 0) == 0
         )
+
+        if not show_only_symbols_with_issues or has_issue:
+            per_symbol_rows.append(row)
 
     per_symbol_df = pd.DataFrame(per_symbol_rows)
     st.dataframe(per_symbol_df, use_container_width=True)
@@ -970,93 +1020,87 @@ This is intended to make validation faster when something looks off.
     pasted_text = st.text_area(
         "Paste content here",
         height=250,
-        placeholder="Paste logs, JSON, dicts, recommendation output, or rows here...",
+        placeholder="Paste traceback, JSON, dict output, copied row data, or raw contract payload here...",
     )
 
-    validate_now = st.button("Validate pasted content")
+    if st.button("Validate pasted content"):
+        if debug_mode == "Raw text / traceback":
+            st.markdown("### Raw text")
+            st.code(pasted_text)
 
-    if validate_now:
-        if not pasted_text.strip():
-            st.warning("Paste something first.")
-        else:
-            if debug_mode == "Raw text / traceback":
-                st.markdown("### Raw text preview")
+            lower_text = pasted_text.lower()
+            quick_flags = []
+
+            if "traceback" in lower_text:
+                quick_flags.append("Contains traceback")
+            if "error" in lower_text:
+                quick_flags.append("Contains error")
+            if "exception" in lower_text:
+                quick_flags.append("Contains exception")
+            if "403" in lower_text or "forbidden" in lower_text:
+                quick_flags.append("Contains HTTP 403 / Forbidden")
+            if "yfinance" in lower_text:
+                quick_flags.append("Mentions yfinance")
+            if "delta" in lower_text:
+                quick_flags.append("Mentions delta")
+
+            if quick_flags:
+                for flag in quick_flags:
+                    st.write(f"- {flag}")
+            else:
+                st.write("No obvious patterns found.")
+
+        elif debug_mode == "JSON / dict payload":
+            parsed, parser_used, parse_error = try_parse_structured(pasted_text)
+
+            if parsed is None:
+                st.error(f"Could not parse structured content: {parse_error}")
                 st.code(pasted_text)
+            else:
+                st.success(f"Parsed successfully using: {parser_used}")
+                st.write("Parsed object type:", type(parsed).__name__)
+                st.json(parsed)
 
-                st.markdown("### Quick checks")
-                quick_flags = []
-                lower_text = pasted_text.lower()
+                if isinstance(parsed, dict):
+                    st.markdown("### Top-level keys")
+                    st.write(list(parsed.keys()))
 
-                if "traceback" in lower_text:
-                    quick_flags.append("Contains a Python traceback")
-                if "keyerror" in lower_text:
-                    quick_flags.append("Contains KeyError")
-                if "modulenotfounderror" in lower_text:
-                    quick_flags.append("Contains ModuleNotFoundError")
-                if "403" in lower_text or "forbidden" in lower_text:
-                    quick_flags.append("Contains HTTP 403 / Forbidden")
-                if "yfinance" in lower_text:
-                    quick_flags.append("Mentions yfinance")
-                if "delta" in lower_text:
-                    quick_flags.append("Mentions delta")
+        elif debug_mode == "Recommendation row":
+            parsed, parser_used, parse_error = try_parse_structured(pasted_text)
 
-                if quick_flags:
-                    for flag in quick_flags:
-                        st.write(f"- {flag}")
-                else:
-                    st.write("No obvious patterns found.")
+            if parsed is None or not isinstance(parsed, dict):
+                st.error("Recommendation row should parse into a dictionary-like object.")
+                if parse_error:
+                    st.caption(parse_error)
+            else:
+                st.success(f"Parsed recommendation row using: {parser_used}")
+                st.json(parsed)
+                st.markdown("### Validation results")
+                st.dataframe(validate_recommendation_like(parsed), use_container_width=True)
 
-            elif debug_mode == "JSON / dict payload":
-                parsed, parser_used, parse_error = try_parse_structured(pasted_text)
+        elif debug_mode == "Contract payload":
+            parsed, parser_used, parse_error = try_parse_structured(pasted_text)
 
-                if parsed is None:
-                    st.error(f"Could not parse structured content: {parse_error}")
-                    st.code(pasted_text)
-                else:
-                    st.success(f"Parsed successfully using: {parser_used}")
-                    st.write("Parsed object type:", type(parsed).__name__)
-                    st.json(parsed)
+            if parsed is None or not isinstance(parsed, dict):
+                st.error("Contract payload should parse into a dictionary-like object.")
+                if parse_error:
+                    st.caption(parse_error)
+            else:
+                st.success(f"Parsed contract payload using: {parser_used}")
+                st.json(parsed)
+                st.markdown("### Validation results")
+                st.dataframe(validate_contract_like(parsed), use_container_width=True)
 
-                    if isinstance(parsed, dict):
-                        st.markdown("### Top-level keys")
-                        st.write(list(parsed.keys()))
+        elif debug_mode == "DataFrame rows / CSV-like text":
+            st.markdown("### Raw pasted rows")
+            st.code(pasted_text)
 
-            elif debug_mode == "Recommendation row":
-                parsed, parser_used, parse_error = try_parse_structured(pasted_text)
+            lines = [line for line in pasted_text.splitlines() if line.strip()]
+            st.write(f"Detected {len(lines)} non-empty lines.")
 
-                if parsed is None or not isinstance(parsed, dict):
-                    st.error("Recommendation row should parse into a dictionary-like object.")
-                    if parse_error:
-                        st.caption(parse_error)
-                else:
-                    st.success(f"Parsed recommendation row using: {parser_used}")
-                    st.json(parsed)
-                    st.markdown("### Validation results")
-                    st.dataframe(validate_recommendation_like(parsed), use_container_width=True)
-
-            elif debug_mode == "Contract payload":
-                parsed, parser_used, parse_error = try_parse_structured(pasted_text)
-
-                if parsed is None or not isinstance(parsed, dict):
-                    st.error("Contract payload should parse into a dictionary-like object.")
-                    if parse_error:
-                        st.caption(parse_error)
-                else:
-                    st.success(f"Parsed contract payload using: {parser_used}")
-                    st.json(parsed)
-                    st.markdown("### Validation results")
-                    st.dataframe(validate_contract_like(parsed), use_container_width=True)
-
-            elif debug_mode == "DataFrame rows / CSV-like text":
-                st.markdown("### Raw pasted rows")
-                st.code(pasted_text)
-
-                lines = [line for line in pasted_text.splitlines() if line.strip()]
-                st.write(f"Detected {len(lines)} non-empty lines.")
-
-                if len(lines) >= 2:
-                    st.info(
-                        "This looks like tabular text. The next step could be adding a parser for tab-separated or CSV rows."
-                    )
-                else:
-                    st.warning("Not enough lines detected to infer a table.")
+            if len(lines) >= 2:
+                st.info(
+                    "This looks like tabular text. The next step could be adding a parser for tab-separated or CSV rows."
+                )
+            else:
+                st.warning("Not enough lines detected to infer a table.")
