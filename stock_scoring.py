@@ -5,7 +5,9 @@ from utils import clamp, half_saturation_score
 
 def score_quality(metrics: StockMetrics, cfg: ScanConfig) -> float:
     if metrics.fcf_yield is None:
-        return cfg.default_quality_score_if_missing
+        if cfg.quality_fallback_mode:
+            return cfg.default_quality_score_if_missing
+        return 0.0
     return half_saturation_score(metrics.fcf_yield, cfg.fcf_half_sat)
 
 
