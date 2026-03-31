@@ -55,16 +55,25 @@ def build_management_plan(stock_price: float, contract: OptionContract, cfg: Sca
 
     roll_candidate_flag = True
 
+    # Make allow_expiry_week_hold a real management setting
+    if cfg.allow_expiry_week_hold:
+        review_at_dte = cfg.review_dte
+        hold_guidance = "Holding into expiration week can be acceptable if price action, liquidity, and assignment comfort remain favorable."
+    else:
+        review_at_dte = max(cfg.review_dte, 5)
+        hold_guidance = "Avoid holding into expiration week; plan to review, close, or roll before 5 DTE unless conditions materially improve."
+
     text = (
         f"Default plan: consider buying back at {profit_take_debit:.2f} "
-        f"for the standard profit target, review the position around {cfg.review_dte} DTE, "
-        f"and begin defensive review if the stock approaches {defensive_review_price:.2f}."
+        f"for the standard profit target, review the position around {review_at_dte} DTE, "
+        f"and begin defensive review if the stock approaches {defensive_review_price:.2f}. "
+        f"{hold_guidance}"
     )
 
     return (
         profit_take_debit,
         fast_profit_take_debit,
-        cfg.review_dte,
+        review_at_dte,
         defensive_review_price,
         roll_candidate_flag,
         text,
