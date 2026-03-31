@@ -64,7 +64,7 @@ def validate_contract(
         contract.contract_valid = False
         contract.contract_exclusion_reasons.append("invalid_bid_ask")
 
-    # Enforce earnings exclusion as a true contract-level rule
+    # Fix 1: enforce earnings exclusion as a true contract-level rule
     if cfg.exclude_earnings_before_expiry and metrics is not None:
         if metrics.days_to_earnings is None:
             contract.contract_valid = False
