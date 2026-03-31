@@ -6,3 +6,6 @@ requests
 lxml
 html5lib
 matplotlib
+pytest==8.3.5
+scipy
+plotly
