@@ -460,7 +460,7 @@ if run_scan:
 
         try:
             metrics = market_provider.get_stock_metrics(symbol)
-            contracts = market_provider.get_option_contracts(symbol, cfg)
+            contracts = market_provider.get_option_contracts(symbol, cfg, stock_metrics=metrics)
             results_by_symbol[symbol]["provider_detail_errors"] = list(
                 getattr(market_provider, "last_errors", [])
             )
