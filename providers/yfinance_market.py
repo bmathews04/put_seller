@@ -53,30 +53,49 @@ class YFinanceMarketProvider:
         self.fundamentals = YFinanceFundamentalsProvider()
         self.risk_free_rate = risk_free_rate
         self.use_cache = use_cache
+        self.last_errors: list[str] = []
 
     def get_price_history(self, symbol: str, period: str = "6mo", interval: str = "1d"):
-        if self.use_cache:
-            return _cached_price_history(symbol, period, interval)
-        return _fetch_price_history(symbol, period, interval)
+        try:
+            if self.use_cache:
+                return _cached_price_history(symbol, period, interval)
+            return _fetch_price_history(symbol, period, interval)
+        except Exception as e:
+            self.last_errors.append(
+                f"price_history {symbol} period={period} interval={interval}: {type(e).__name__}: {e}"
+            )
+            raise
 
     def get_stock_metrics(self, symbol: str):
-        if self.use_cache:
-            return _cached_stock_metrics(symbol)
-        return _fetch_stock_metrics(symbol)
+        try:
+            if self.use_cache:
+                return _cached_stock_metrics(symbol)
+            return _fetch_stock_metrics(symbol)
+        except Exception as e:
+            self.last_errors.append(f"stock_metrics {symbol}: {type(e).__name__}: {e}")
+            raise
 
     def get_option_contracts(self, symbol: str, cfg: ScanConfig | None = None) -> list[OptionContract]:
+        self.last_errors = []
+
         ticker = yf.Ticker(symbol)
 
         stock_metrics = self.get_stock_metrics(symbol)
         underlying_price = stock_metrics.stock_price
 
-        expirations = ticker.options or []
+        try:
+            expirations = ticker.options or []
+        except Exception as e:
+            self.last_errors.append(f"{symbol} expirations: {type(e).__name__}: {e}")
+            return []
+
         contracts: list[OptionContract] = []
 
         for exp_str in expirations:
             try:
                 exp_date = date.fromisoformat(exp_str)
             except ValueError:
+                self.last_errors.append(f"{symbol} {exp_str}: invalid expiration format")
                 continue
 
             dte = (exp_date - date.today()).days
@@ -92,10 +111,12 @@ class YFinanceMarketProvider:
                     puts: pd.DataFrame = _cached_option_chain(symbol, exp_str)
                 else:
                     puts = _fetch_option_chain(symbol, exp_str)
-            except Exception:
+            except Exception as e:
+                self.last_errors.append(f"{symbol} {exp_str}: {type(e).__name__}: {e}")
                 continue
 
             if puts.empty:
+                self.last_errors.append(f"{symbol} {exp_str}: empty_put_chain")
                 continue
 
             for _, row in puts.iterrows():
@@ -116,13 +137,18 @@ class YFinanceMarketProvider:
                     and implied_vol > 0
                     and dte > 0
                 ):
-                    delta_est = black_scholes_put_delta(
-                        spot=underlying_price,
-                        strike=strike,
-                        dte=dte,
-                        implied_volatility=implied_vol,
-                        risk_free_rate=self.risk_free_rate,
-                    )
+                    try:
+                        delta_est = black_scholes_put_delta(
+                            spot=underlying_price,
+                            strike=strike,
+                            dte=dte,
+                            implied_volatility=implied_vol,
+                            risk_free_rate=self.risk_free_rate,
+                        )
+                    except Exception as e:
+                        self.last_errors.append(
+                            f"{symbol} {exp_str} strike={strike}: delta_calc_failed: {type(e).__name__}: {e}"
+                        )
 
                 contracts.append(
                     OptionContract(
