@@ -9,35 +9,60 @@ from greeks import black_scholes_put_delta
 from models import OptionContract
 from providers.yfinance_fundamentals import YFinanceFundamentalsProvider
 
-@st.cache_data(ttl=900, show_spinner=False)
-def _cached_price_history(symbol: str, period: str = "6mo", interval: str = "1d"):
+
+# ----------------------------
+# Pure fetch helpers (no Streamlit dependency in behavior)
+# ----------------------------
+def _fetch_price_history(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
     ticker = yf.Ticker(symbol)
     hist = ticker.history(period=period, interval=interval, auto_adjust=False)
     return hist.copy()
 
-@st.cache_data(ttl=900, show_spinner=False)
-def _cached_stock_metrics(symbol: str):
+
+def _fetch_stock_metrics(symbol: str):
     provider = YFinanceFundamentalsProvider()
     return provider.get_stock_metrics(symbol)
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def _cached_option_chain(symbol: str, exp_str: str):
+def _fetch_option_chain(symbol: str, exp_str: str) -> pd.DataFrame:
     ticker = yf.Ticker(symbol)
     chain = ticker.option_chain(exp_str)
     return chain.puts.copy()
 
 
+# ----------------------------
+# Streamlit-cached wrappers
+# ----------------------------
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_price_history(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
+    return _fetch_price_history(symbol, period, interval)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_stock_metrics(symbol: str):
+    return _fetch_stock_metrics(symbol)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_option_chain(symbol: str, exp_str: str) -> pd.DataFrame:
+    return _fetch_option_chain(symbol, exp_str)
+
+
 class YFinanceMarketProvider:
-    def get_price_history(self, symbol: str, period: str = "6mo", interval: str = "1d"):
-        return _cached_price_history(symbol, period, interval)
-    
-    def __init__(self, risk_free_rate: float = 0.045) -> None:
+    def __init__(self, risk_free_rate: float = 0.045, use_cache: bool = True) -> None:
         self.fundamentals = YFinanceFundamentalsProvider()
         self.risk_free_rate = risk_free_rate
+        self.use_cache = use_cache
+
+    def get_price_history(self, symbol: str, period: str = "6mo", interval: str = "1d"):
+        if self.use_cache:
+            return _cached_price_history(symbol, period, interval)
+        return _fetch_price_history(symbol, period, interval)
 
     def get_stock_metrics(self, symbol: str):
-        return _cached_stock_metrics(symbol)
+        if self.use_cache:
+            return _cached_stock_metrics(symbol)
+        return _fetch_stock_metrics(symbol)
 
     def get_option_contracts(self, symbol: str, cfg: ScanConfig | None = None) -> list[OptionContract]:
         ticker = yf.Ticker(symbol)
@@ -59,12 +84,14 @@ class YFinanceMarketProvider:
                 continue
 
             # Early DTE filter to reduce workload
-            if cfg is not None:
-                if dte < cfg.min_dte or dte > cfg.max_dte:
-                    continue
+            if cfg is not None and (dte < cfg.min_dte or dte > cfg.max_dte):
+                continue
 
             try:
-                puts: pd.DataFrame = _cached_option_chain(symbol, exp_str)
+                if self.use_cache:
+                    puts: pd.DataFrame = _cached_option_chain(symbol, exp_str)
+                else:
+                    puts = _fetch_option_chain(symbol, exp_str)
             except Exception:
                 continue
 
