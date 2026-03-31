@@ -31,6 +31,9 @@ if "results_by_symbol" not in st.session_state:
 if "ranked_df" not in st.session_state:
     st.session_state.ranked_df = pd.DataFrame()
 
+if "previous_ranked_df" not in st.session_state:
+    st.session_state.previous_ranked_df = pd.DataFrame()
+
 if "stock_excl_df" not in st.session_state:
     st.session_state.stock_excl_df = pd.DataFrame()
 
@@ -48,15 +51,30 @@ if "last_scan_cfg" not in st.session_state:
 # Helpers
 # ---------------------------
 def fmt_pct(value):
-    if value is None:
+    if value is None or pd.isna(value):
         return "—"
     return f"{value * 100:.2f}%"
 
 
 def fmt_num(value, decimals=2):
-    if value is None:
+    if value is None or pd.isna(value):
         return "—"
     return f"{value:.{decimals}f}"
+
+
+def confidence_rank(value):
+    mapping = {"High": 3, "Medium": 2, "Low": 1}
+    return mapping.get(value, 0)
+
+
+def technical_rank(value):
+    mapping = {
+        "Strongly supportive": 4,
+        "Supportive": 3,
+        "Mixed": 2,
+        "Cautious": 1,
+    }
+    return mapping.get(value, 0)
 
 
 def recommendation_to_row(rec):
@@ -293,6 +311,82 @@ def render_price_chart(hist: pd.DataFrame, tech: dict, breakeven_price: float | 
     st.pyplot(fig)
 
 
+def filter_ranked_df(
+    df: pd.DataFrame,
+    min_confidence: str,
+    min_yield: float,
+    min_cushion: float,
+    technical_filter: str,
+    max_dte_filter: int,
+    clean_only: bool,
+):
+    if df.empty:
+        return df.copy()
+
+    filtered = df.copy()
+
+    if min_confidence != "Any":
+        min_conf_rank = confidence_rank(min_confidence)
+        filtered = filtered[
+            filtered["confidence"].apply(lambda x: confidence_rank(x) >= min_conf_rank)
+        ]
+
+    if "annualized_secured_yield" in filtered.columns:
+        filtered = filtered[
+            filtered["annualized_secured_yield"].fillna(-999) >= min_yield
+        ]
+
+    if "breakeven_discount_pct" in filtered.columns:
+        filtered = filtered[
+            filtered["breakeven_discount_pct"].fillna(-999) >= min_cushion
+        ]
+
+    if technical_filter != "Any":
+        min_tech_rank = technical_rank(technical_filter)
+        filtered = filtered[
+            filtered["technical_label"].apply(lambda x: technical_rank(x) >= min_tech_rank)
+        ]
+
+    if "dte" in filtered.columns:
+        filtered = filtered[filtered["dte"].fillna(9999) <= max_dte_filter]
+
+    if clean_only:
+        filtered = filtered[
+            filtered["warning_flags"].fillna("").str.strip() == ""
+        ]
+
+    return filtered
+
+
+def build_scan_changes(current_df: pd.DataFrame, previous_df: pd.DataFrame):
+    if current_df.empty and previous_df.empty:
+        return [], [], pd.DataFrame(columns=["symbol", "previous_score", "current_score", "score_change"])
+
+    current = current_df.copy() if not current_df.empty else pd.DataFrame(columns=["symbol", "final_score"])
+    previous = previous_df.copy() if not previous_df.empty else pd.DataFrame(columns=["symbol", "final_score"])
+
+    current_symbols = set(current["symbol"].tolist()) if "symbol" in current.columns else set()
+    previous_symbols = set(previous["symbol"].tolist()) if "symbol" in previous.columns else set()
+
+    new_symbols = sorted(current_symbols - previous_symbols)
+    dropped_symbols = sorted(previous_symbols - current_symbols)
+
+    movers_df = pd.DataFrame(columns=["symbol", "previous_score", "current_score", "score_change"])
+    if "symbol" in current.columns and "symbol" in previous.columns:
+        merged = previous[["symbol", "final_score"]].rename(columns={"final_score": "previous_score"}).merge(
+            current[["symbol", "final_score"]].rename(columns={"final_score": "current_score"}),
+            on="symbol",
+            how="inner",
+        )
+        if not merged.empty:
+            merged["score_change"] = merged["current_score"] - merged["previous_score"]
+            movers_df = merged.reindex(
+                merged["score_change"].abs().sort_values(ascending=False).index
+            ).reset_index(drop=True)
+
+    return new_symbols, dropped_symbols, movers_df
+
+
 # ---------------------------
 # Sidebar / settings
 # ---------------------------
@@ -312,7 +406,6 @@ with st.sidebar:
 
     min_dte = st.number_input("Min DTE", min_value=1, max_value=365, value=25)
     max_dte = st.number_input("Max DTE", min_value=1, max_value=365, value=40)
-    target_dte = st.number_input("Target DTE", min_value=1, max_value=365, value=32)
 
     min_delta = st.number_input(
         "Min abs delta",
@@ -330,29 +423,7 @@ with st.sidebar:
         step=0.01,
         format="%.2f",
     )
-    target_delta = st.number_input(
-        "Target abs delta",
-        min_value=0.01,
-        max_value=1.00,
-        value=0.17,
-        step=0.01,
-        format="%.2f",
-    )
 
-    min_oi = st.number_input(
-        "Min open interest",
-        min_value=0,
-        max_value=100000,
-        value=500,
-        step=50,
-    )
-    min_volume = st.number_input(
-        "Min volume",
-        min_value=0,
-        max_value=100000,
-        value=25,
-        step=5,
-    )
     max_spread_pct = st.number_input(
         "Max spread %",
         min_value=0.01,
@@ -371,8 +442,33 @@ with st.sidebar:
     )
 
     exclude_earnings = st.checkbox("Exclude earnings before expiry", value=True)
-    require_quality_data = st.checkbox("Require quality data", value=False)
-    strict_data_mode = st.checkbox("Strict data mode", value=False)
+
+    with st.expander("Advanced scan rules", expanded=False):
+        target_dte = st.number_input("Target DTE", min_value=1, max_value=365, value=32)
+        target_delta = st.number_input(
+            "Target abs delta",
+            min_value=0.01,
+            max_value=1.00,
+            value=0.17,
+            step=0.01,
+            format="%.2f",
+        )
+        min_oi = st.number_input(
+            "Min open interest",
+            min_value=0,
+            max_value=100000,
+            value=500,
+            step=50,
+        )
+        min_volume = st.number_input(
+            "Min volume",
+            min_value=0,
+            max_value=100000,
+            value=25,
+            step=5,
+        )
+        require_quality_data = st.checkbox("Require quality data", value=False)
+        strict_data_mode = st.checkbox("Strict data mode", value=False)
 
     run_scan = st.button("Run Scan", type="primary")
 
@@ -381,6 +477,7 @@ with st.sidebar:
         st.session_state.all_recommendations = []
         st.session_state.results_by_symbol = {}
         st.session_state.ranked_df = pd.DataFrame()
+        st.session_state.previous_ranked_df = pd.DataFrame()
         st.session_state.stock_excl_df = pd.DataFrame()
         st.session_state.contract_excl_df = pd.DataFrame()
         st.session_state.scan_summary = {}
@@ -545,6 +642,7 @@ if run_scan:
         ),
     }
 
+    st.session_state.previous_ranked_df = st.session_state.ranked_df.copy()
     st.session_state.all_recommendations = all_recommendations
     st.session_state.results_by_symbol = results_by_symbol
     st.session_state.ranked_df = ranked_df
@@ -562,12 +660,77 @@ else:
     contract_excl_df = st.session_state.contract_excl_df
     scan_summary = st.session_state.scan_summary
 
+previous_ranked_df = st.session_state.previous_ranked_df
+
+# Shared ranked filters for dashboard + ranked tab
+if ranked_df.empty:
+    filtered_ranked_df = ranked_df.copy()
+else:
+    default_max_dte = int(ranked_df["dte"].max()) if "dte" in ranked_df.columns else int(cfg.max_dte)
+
+    rank_filter_col1, rank_filter_col2, rank_filter_col3 = st.columns(3)
+    with rank_filter_col1:
+        min_confidence = st.selectbox(
+            "Minimum confidence",
+            ["Any", "Medium", "High"],
+            index=0,
+            key="global_min_confidence",
+        )
+        technical_filter = st.selectbox(
+            "Minimum technical label",
+            ["Any", "Cautious", "Mixed", "Supportive", "Strongly supportive"],
+            index=0,
+            key="global_technical_filter",
+        )
+    with rank_filter_col2:
+        min_yield = st.slider(
+            "Minimum annualized yield",
+            min_value=0.00,
+            max_value=0.50,
+            value=0.00,
+            step=0.01,
+            key="global_min_yield",
+        )
+        min_cushion = st.slider(
+            "Minimum break-even cushion",
+            min_value=0.00,
+            max_value=0.30,
+            value=0.00,
+            step=0.01,
+            key="global_min_cushion",
+        )
+    with rank_filter_col3:
+        max_dte_filter = st.slider(
+            "Maximum DTE",
+            min_value=1,
+            max_value=max(365, default_max_dte),
+            value=default_max_dte,
+            step=1,
+            key="global_max_dte_filter",
+        )
+        clean_only = st.checkbox(
+            "Show only setups with no warning flags",
+            value=False,
+            key="global_clean_only",
+        )
+
+    filtered_ranked_df = filter_ranked_df(
+        ranked_df,
+        min_confidence=min_confidence,
+        min_yield=min_yield,
+        min_cushion=min_cushion,
+        technical_filter=technical_filter,
+        max_dte_filter=max_dte_filter,
+        clean_only=clean_only,
+    )
+
+new_symbols, dropped_symbols, movers_df = build_scan_changes(filtered_ranked_df, previous_ranked_df)
 
 # ---------------------------
 # Dashboard
 # ---------------------------
 with tab_dashboard:
-    st.subheader("Scan Summary")
+    st.subheader("Decision Board")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Universe scanned", scan_summary.get("symbols_in_universe", 0))
@@ -579,39 +742,102 @@ with tab_dashboard:
     if ranked_df.empty:
         st.warning("No recommendations found for this scan.")
     else:
-        avg_yield = ranked_df["annualized_secured_yield"].dropna().mean() if "annualized_secured_yield" in ranked_df else None
-        avg_cushion = ranked_df["breakeven_discount_pct"].dropna().mean() if "breakeven_discount_pct" in ranked_df else None
-        avg_final = ranked_df["final_score"].dropna().mean() if "final_score" in ranked_df else None
+        st.markdown("### Filtered opportunity snapshot")
+        q1, q2, q3, q4 = st.columns(4)
 
-        c6, c7, c8 = st.columns(3)
-        c6.metric("Avg annualized yield", fmt_pct(avg_yield))
-        c7.metric("Avg break-even cushion", fmt_pct(avg_cushion))
-        c8.metric("Avg final score", fmt_num(avg_final))
+        high_conf_count = (
+            filtered_ranked_df["confidence"].eq("High").sum()
+            if "confidence" in filtered_ranked_df.columns else 0
+        )
+        supportive_count = (
+            filtered_ranked_df["technical_label"].isin(["Supportive", "Strongly supportive"]).sum()
+            if "technical_label" in filtered_ranked_df.columns else 0
+        )
+        avg_yield = filtered_ranked_df["annualized_secured_yield"].dropna().mean() if "annualized_secured_yield" in filtered_ranked_df.columns else None
+        avg_cushion = filtered_ranked_df["breakeven_discount_pct"].dropna().mean() if "breakeven_discount_pct" in filtered_ranked_df.columns else None
 
-        st.markdown("### Top 5 Setups")
-        top5 = ranked_df.head(5).copy()
+        q1.metric("Filtered setups", len(filtered_ranked_df))
+        q2.metric("High confidence", int(high_conf_count))
+        q3.metric("Supportive technicals", int(supportive_count))
+        q4.metric("Avg filtered yield", fmt_pct(avg_yield))
 
-        display_cols = [
+        q5, q6, q7 = st.columns(3)
+        q5.metric("Avg filtered cushion", fmt_pct(avg_cushion))
+        q6.metric("New since last scan", len(new_symbols))
+        q7.metric("Dropped since last scan", len(dropped_symbols))
+
+        st.markdown("### Best trade right now")
+        if filtered_ranked_df.empty:
+            st.info("No setups match the current quick filters.")
+        else:
+            best = filtered_ranked_df.sort_values("final_score", ascending=False).iloc[0]
+
+            hero1, hero2, hero3, hero4, hero5 = st.columns(5)
+            hero1.metric("Symbol", best["symbol"])
+            hero2.metric("Contract", f"{fmt_num(best['strike'])}P")
+            hero3.metric("Expiration / DTE", f"{best['expiration']} / {int(best['dte'])}")
+            hero4.metric("Suggested entry", fmt_num(best["entry_limit"]))
+            hero5.metric("Confidence", best["confidence"])
+
+            hero6, hero7, hero8, hero9, hero10 = st.columns(5)
+            hero6.metric("Premium", fmt_num(best["premium"]))
+            hero7.metric("Break-even", fmt_num(best["breakeven"]))
+            hero8.metric("Break-even cushion", fmt_pct(best["breakeven_discount_pct"]))
+            hero9.metric("Annualized yield", fmt_pct(best["annualized_secured_yield"]))
+            hero10.metric("Final score", fmt_num(best["final_score"]))
+
+            st.write(
+                f"**Technical read:** {best.get('technical_label', 'Unknown')} | "
+                f"**Trend:** {best.get('trend_state', 'Unknown')}"
+            )
+            st.write(f"**Why it stands out:** {best.get('reasons', '—')}")
+            st.write(f"**Main watchout:** {best.get('risks', '—')}")
+
+        st.markdown("### Top actionable ideas")
+        actionable_cols = [
             "symbol",
             "company_name",
-            "sector",
-            "stock_price",
             "expiration",
             "dte",
             "strike",
-            "delta_abs",
             "premium",
             "entry_limit",
             "breakeven",
             "breakeven_discount_pct",
             "annualized_secured_yield",
-            "trend_state",
             "technical_label",
             "final_score",
             "confidence",
+            "reasons",
+            "risks",
         ]
-        available_cols = [col for col in display_cols if col in top5.columns]
-        st.dataframe(top5[available_cols], use_container_width=True)
+        actionable_df = filtered_ranked_df.sort_values("final_score", ascending=False).head(5).copy()
+        available_cols = [col for col in actionable_cols if col in actionable_df.columns]
+        st.dataframe(actionable_df[available_cols], use_container_width=True)
+
+        st.markdown("### What changed since last scan")
+        change_col1, change_col2 = st.columns(2)
+
+        with change_col1:
+            st.markdown("**New symbols**")
+            if new_symbols:
+                st.write(", ".join(new_symbols))
+            else:
+                st.write("No new symbols in the filtered list.")
+
+            st.markdown("**Dropped symbols**")
+            if dropped_symbols:
+                st.write(", ".join(dropped_symbols))
+            else:
+                st.write("No dropped symbols from the previous filtered list.")
+
+        with change_col2:
+            st.markdown("**Biggest score movers**")
+            if movers_df.empty:
+                st.write("No overlapping symbols to compare.")
+            else:
+                movers_display = movers_df.head(5).copy()
+                st.dataframe(movers_display, use_container_width=True)
 
 
 # ---------------------------
@@ -639,42 +865,47 @@ with tab_ranked:
             index=0,
         )
         ascending = st.checkbox("Ascending sort", value=False)
+        show_advanced_columns = st.checkbox("Show advanced columns", value=False)
 
-        ranked_sorted = ranked_df.sort_values(sort_col, ascending=ascending).reset_index(drop=True)
+        ranked_sorted = filtered_ranked_df.sort_values(sort_col, ascending=ascending).reset_index(drop=True)
         ranked_sorted.insert(0, "rank", range(1, len(ranked_sorted) + 1))
 
-        display_cols = [
+        default_cols = [
             "rank",
             "symbol",
             "company_name",
-            "sector",
-            "stock_price",
             "expiration",
             "dte",
             "strike",
-            "delta_abs",
             "premium",
             "entry_limit",
-            "entry_low",
-            "entry_high",
             "breakeven",
             "breakeven_discount_pct",
             "annualized_secured_yield",
+            "technical_label",
+            "final_score",
+            "confidence",
+            "risks",
+        ]
+
+        advanced_cols = [
+            "sector",
+            "stock_price",
+            "delta_abs",
+            "entry_low",
+            "entry_high",
             "trend_state",
             "distance_to_support_pct",
             "cushion_atr_units",
             "technical_score",
-            "technical_label",
             "stock_score",
             "contract_score",
             "pres",
-            "final_score",
-            "confidence",
             "warning_flags",
             "reasons",
-            "risks",
         ]
 
+        display_cols = default_cols + (advanced_cols if show_advanced_columns else [])
         available_cols = [col for col in display_cols if col in ranked_sorted.columns]
         st.dataframe(ranked_sorted[available_cols], use_container_width=True)
 
@@ -688,8 +919,14 @@ with tab_details:
     if not all_recommendations:
         st.warning("No contract details available.")
     else:
+        default_symbol = all_recommendations[0].symbol
+        if not filtered_ranked_df.empty and "symbol" in filtered_ranked_df.columns:
+            default_symbol = filtered_ranked_df.sort_values("final_score", ascending=False).iloc[0]["symbol"]
+
         symbol_options = [rec.symbol for rec in all_recommendations]
-        selected_symbol = st.selectbox("Select symbol", symbol_options, index=0)
+        default_index = symbol_options.index(default_symbol) if default_symbol in symbol_options else 0
+        selected_symbol = st.selectbox("Select symbol", symbol_options, index=default_index)
+        st.caption("Tip: this defaults to the top currently filtered setup.")
 
         selected_rec = next(rec for rec in all_recommendations if rec.symbol == selected_symbol)
         c = selected_rec.selected_contract
