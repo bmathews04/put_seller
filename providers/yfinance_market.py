@@ -6,7 +6,7 @@ import yfinance as yf
 
 from config import ScanConfig
 from greeks import black_scholes_put_delta
-from models import OptionContract
+from models import OptionContract, StockMetrics
 from providers.yfinance_fundamentals import YFinanceFundamentalsProvider
 
 
@@ -75,13 +75,19 @@ class YFinanceMarketProvider:
             self.last_errors.append(f"stock_metrics {symbol}: {type(e).__name__}: {e}")
             raise
 
-    def get_option_contracts(self, symbol: str, cfg: ScanConfig | None = None) -> list[OptionContract]:
+    def get_option_contracts(
+        self,
+        symbol: str,
+        cfg: ScanConfig | None = None,
+        stock_metrics: StockMetrics | None = None,
+    ) -> list[OptionContract]:
         self.last_errors = []
 
         ticker = yf.Ticker(symbol)
 
-        stock_metrics = self.get_stock_metrics(symbol)
-        underlying_price = stock_metrics.stock_price
+        # Reuse caller-supplied metrics when available to avoid duplicate fetches
+        metrics = stock_metrics if stock_metrics is not None else self.get_stock_metrics(symbol)
+        underlying_price = metrics.stock_price
 
         try:
             expirations = ticker.options or []
