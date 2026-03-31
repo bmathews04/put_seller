@@ -171,7 +171,7 @@ def build_recommendations_for_stock(metrics: StockMetrics, raw_contracts: list[O
 
     for raw_contract in raw_contracts:
         contract = derive_contract_metrics(raw_contract, metrics.stock_price)
-        contract = validate_contract(contract, cfg)
+        contract = validate_contract(contract, cfg, metrics)
 
         if contract.premium is None or contract.premium < cfg.min_premium:
             contract.contract_valid = False
