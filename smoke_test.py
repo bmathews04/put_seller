@@ -16,17 +16,24 @@ print(f"Stock price: {metrics.stock_price}")
 print(f"Contracts pulled: {len(contracts)}")
 print(f"Recommendations: {len(recs)}")
 
-for rec in recs[:5]:
-    c = rec.selected_contract
-    print("-" * 60)
-    print("Final score:", round(rec.scores.final_score, 2))
-    print("Expiration:", c.expiration_date)
-    print("DTE:", c.dte)
-    print("Strike:", c.strike)
-    print("Delta:", c.delta)
-    print("Premium:", c.premium)
-    print("Break-even:", c.breakeven_price)
-    print("Annualized yield:", c.annualized_secured_yield)
-    print("Suggested entry:", rec.suggested_entry_limit)
-    print("Reasons:", rec.top_reasons)
-    print("Risks:", rec.top_risks)
+if not recs:
+    print("No recommendations returned.")
+else:
+    for rec in recs[:5]:
+        c = rec.selected_contract
+        print("-" * 60)
+        print("Final score:", round(rec.scores.final_score, 2))
+        print("Expiration:", c.expiration_date)
+        print("DTE:", c.dte)
+        print("Strike:", c.strike)
+        print("Delta:", c.delta)
+        print("Bid:", c.bid)
+        print("Ask:", c.ask)
+        print("Premium:", c.premium)
+        print("Break-even:", c.breakeven_price)
+        print("Annualized yield:", c.annualized_secured_yield)
+        print("Suggested entry:", rec.suggested_entry_limit)
+        print("Confidence:", rec.confidence_level)
+        print("Reasons:", rec.top_reasons)
+        print("Risks:", rec.top_risks)
+        print("Management:", rec.management_plan_text)
