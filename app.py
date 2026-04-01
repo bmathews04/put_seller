@@ -16,6 +16,7 @@ from technicals import (
 
 st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
+
 # ---------------------------
 # Session state initialization
 # ---------------------------
@@ -46,6 +47,9 @@ if "scan_summary" not in st.session_state:
 if "last_scan_cfg" not in st.session_state:
     st.session_state.last_scan_cfg = None
 
+if "selected_detail_symbol" not in st.session_state:
+    st.session_state.selected_detail_symbol = None
+
 
 # ---------------------------
 # Helpers
@@ -71,15 +75,43 @@ def technical_rank(value):
     mapping = {
         "Strongly supportive": 4,
         "Supportive": 3,
+        "Mildly supportive": 3,
         "Mixed": 2,
+        "Neutral": 2,
         "Cautious": 1,
+        "Weak": 1,
     }
     return mapping.get(value, 0)
 
 
+def derive_decision_status(row):
+    confidence = row.get("confidence")
+    technical_label = row.get("technical_label")
+    warning_flags = str(row.get("warning_flags", "") or "").strip()
+    final_score = row.get("final_score")
+
+    if (
+        confidence == "High"
+        and technical_rank(technical_label) >= technical_rank("Supportive")
+        and not warning_flags
+        and final_score is not None
+        and final_score >= 70
+    ):
+        return "Ready"
+
+    if (
+        confidence in {"High", "Medium"}
+        and final_score is not None
+        and final_score >= 55
+    ):
+        return "Review"
+
+    return "Pass"
+
+
 def recommendation_to_row(rec):
     c = rec.selected_contract
-    return {
+    row = {
         "symbol": rec.symbol,
         "stock_price": rec.stock_price,
         "expiration": c.expiration_date,
@@ -111,6 +143,8 @@ def recommendation_to_row(rec):
         "technical_score": getattr(rec, "_technical_score", None),
         "technical_label": getattr(rec, "_technical_label", None),
     }
+    row["decision_status"] = derive_decision_status(row)
+    return row
 
 
 def summarize_exclusions(results_by_symbol):
@@ -482,6 +516,7 @@ with st.sidebar:
         st.session_state.contract_excl_df = pd.DataFrame()
         st.session_state.scan_summary = {}
         st.session_state.last_scan_cfg = None
+        st.session_state.selected_detail_symbol = None
         st.rerun()
 
 cfg = ScanConfig(
@@ -652,6 +687,9 @@ if run_scan:
     st.session_state.scan_completed = True
     st.session_state.last_scan_cfg = cfg
 
+    if not ranked_df.empty:
+        st.session_state.selected_detail_symbol = ranked_df.sort_values("final_score", ascending=False).iloc[0]["symbol"]
+
 else:
     all_recommendations = st.session_state.all_recommendations
     results_by_symbol = st.session_state.results_by_symbol
@@ -661,70 +699,7 @@ else:
     scan_summary = st.session_state.scan_summary
 
 previous_ranked_df = st.session_state.previous_ranked_df
-
-# Shared ranked filters for dashboard + ranked tab
-if ranked_df.empty:
-    filtered_ranked_df = ranked_df.copy()
-else:
-    default_max_dte = int(ranked_df["dte"].max()) if "dte" in ranked_df.columns else int(cfg.max_dte)
-
-    rank_filter_col1, rank_filter_col2, rank_filter_col3 = st.columns(3)
-    with rank_filter_col1:
-        min_confidence = st.selectbox(
-            "Minimum confidence",
-            ["Any", "Medium", "High"],
-            index=0,
-            key="global_min_confidence",
-        )
-        technical_filter = st.selectbox(
-            "Minimum technical label",
-            ["Any", "Cautious", "Mixed", "Supportive", "Strongly supportive"],
-            index=0,
-            key="global_technical_filter",
-        )
-    with rank_filter_col2:
-        min_yield = st.slider(
-            "Minimum annualized yield",
-            min_value=0.00,
-            max_value=0.50,
-            value=0.00,
-            step=0.01,
-            key="global_min_yield",
-        )
-        min_cushion = st.slider(
-            "Minimum break-even cushion",
-            min_value=0.00,
-            max_value=0.30,
-            value=0.00,
-            step=0.01,
-            key="global_min_cushion",
-        )
-    with rank_filter_col3:
-        max_dte_filter = st.slider(
-            "Maximum DTE",
-            min_value=1,
-            max_value=max(365, default_max_dte),
-            value=default_max_dte,
-            step=1,
-            key="global_max_dte_filter",
-        )
-        clean_only = st.checkbox(
-            "Show only setups with no warning flags",
-            value=False,
-            key="global_clean_only",
-        )
-
-    filtered_ranked_df = filter_ranked_df(
-        ranked_df,
-        min_confidence=min_confidence,
-        min_yield=min_yield,
-        min_cushion=min_cushion,
-        technical_filter=technical_filter,
-        max_dte_filter=max_dte_filter,
-        clean_only=clean_only,
-    )
-
-new_symbols, dropped_symbols, movers_df = build_scan_changes(filtered_ranked_df, previous_ranked_df)
+new_symbols, dropped_symbols, movers_df = build_scan_changes(ranked_df, previous_ranked_df)
 
 # ---------------------------
 # Dashboard
@@ -742,76 +717,55 @@ with tab_dashboard:
     if ranked_df.empty:
         st.warning("No recommendations found for this scan.")
     else:
-        st.markdown("### Filtered opportunity snapshot")
-        q1, q2, q3, q4 = st.columns(4)
-
-        high_conf_count = (
-            filtered_ranked_df["confidence"].eq("High").sum()
-            if "confidence" in filtered_ranked_df.columns else 0
-        )
-        supportive_count = (
-            filtered_ranked_df["technical_label"].isin(["Supportive", "Strongly supportive"]).sum()
-            if "technical_label" in filtered_ranked_df.columns else 0
-        )
-        avg_yield = filtered_ranked_df["annualized_secured_yield"].dropna().mean() if "annualized_secured_yield" in filtered_ranked_df.columns else None
-        avg_cushion = filtered_ranked_df["breakeven_discount_pct"].dropna().mean() if "breakeven_discount_pct" in filtered_ranked_df.columns else None
-
-        q1.metric("Filtered setups", len(filtered_ranked_df))
-        q2.metric("High confidence", int(high_conf_count))
-        q3.metric("Supportive technicals", int(supportive_count))
-        q4.metric("Avg filtered yield", fmt_pct(avg_yield))
-
-        q5, q6, q7 = st.columns(3)
-        q5.metric("Avg filtered cushion", fmt_pct(avg_cushion))
-        q6.metric("New since last scan", len(new_symbols))
-        q7.metric("Dropped since last scan", len(dropped_symbols))
+        dashboard_df = ranked_df.sort_values("final_score", ascending=False).reset_index(drop=True)
 
         st.markdown("### Best trade right now")
-        if filtered_ranked_df.empty:
-            st.info("No setups match the current quick filters.")
-        else:
-            best = filtered_ranked_df.sort_values("final_score", ascending=False).iloc[0]
+        best = dashboard_df.iloc[0]
 
-            hero1, hero2, hero3, hero4, hero5 = st.columns(5)
-            hero1.metric("Symbol", best["symbol"])
-            hero2.metric("Contract", f"{fmt_num(best['strike'])}P")
-            hero3.metric("Expiration / DTE", f"{best['expiration']} / {int(best['dte'])}")
-            hero4.metric("Suggested entry", fmt_num(best["entry_limit"]))
-            hero5.metric("Confidence", best["confidence"])
+        next_gap = None
+        if len(dashboard_df) > 1:
+            next_gap = best["final_score"] - dashboard_df.iloc[1]["final_score"]
 
-            hero6, hero7, hero8, hero9, hero10 = st.columns(5)
-            hero6.metric("Premium", fmt_num(best["premium"]))
-            hero7.metric("Break-even", fmt_num(best["breakeven"]))
-            hero8.metric("Break-even cushion", fmt_pct(best["breakeven_discount_pct"]))
-            hero9.metric("Annualized yield", fmt_pct(best["annualized_secured_yield"]))
-            hero10.metric("Final score", fmt_num(best["final_score"]))
+        hero1, hero2, hero3, hero4, hero5, hero6 = st.columns(6)
+        hero1.metric("Symbol", best["symbol"])
+        hero2.metric("Decision", best.get("decision_status", "Review"))
+        hero3.metric("Contract", f"{fmt_num(best['strike'])}P")
+        hero4.metric("Expiration / DTE", f"{best['expiration']} / {int(best['dte'])}")
+        hero5.metric("Suggested entry", fmt_num(best["entry_limit"]))
+        hero6.metric("Confidence", best["confidence"])
 
-            st.write(
-                f"**Technical read:** {best.get('technical_label', 'Unknown')} | "
-                f"**Trend:** {best.get('trend_state', 'Unknown')}"
-            )
-            st.write(f"**Why it stands out:** {best.get('reasons', '—')}")
-            st.write(f"**Main watchout:** {best.get('risks', '—')}")
+        hero7, hero8, hero9, hero10, hero11, hero12 = st.columns(6)
+        hero7.metric("Premium", fmt_num(best["premium"]))
+        hero8.metric("Break-even", fmt_num(best["breakeven"]))
+        hero9.metric("Break-even cushion", fmt_pct(best["breakeven_discount_pct"]))
+        hero10.metric("Annualized yield", fmt_pct(best["annualized_secured_yield"]))
+        hero11.metric("Final score", fmt_num(best["final_score"]))
+        hero12.metric("Gap vs #2", fmt_num(next_gap))
+
+        st.write(
+            f"**Technical read:** {best.get('technical_label', 'Unknown')} | "
+            f"**Trend:** {best.get('trend_state', 'Unknown')}"
+        )
+        st.write(f"**Why it stands out:** {best.get('reasons', '—')}")
+        st.write(f"**Main watchout:** {best.get('risks', '—')}")
 
         st.markdown("### Top actionable ideas")
         actionable_cols = [
             "symbol",
-            "company_name",
             "expiration",
             "dte",
             "strike",
             "premium",
             "entry_limit",
-            "breakeven",
             "breakeven_discount_pct",
             "annualized_secured_yield",
             "technical_label",
+            "decision_status",
             "final_score",
             "confidence",
-            "reasons",
             "risks",
         ]
-        actionable_df = filtered_ranked_df.sort_values("final_score", ascending=False).head(5).copy()
+        actionable_df = dashboard_df.head(3).copy()
         available_cols = [col for col in actionable_cols if col in actionable_df.columns]
         st.dataframe(actionable_df[available_cols], use_container_width=True)
 
@@ -823,21 +777,20 @@ with tab_dashboard:
             if new_symbols:
                 st.write(", ".join(new_symbols))
             else:
-                st.write("No new symbols in the filtered list.")
+                st.write("No new symbols.")
 
             st.markdown("**Dropped symbols**")
             if dropped_symbols:
                 st.write(", ".join(dropped_symbols))
             else:
-                st.write("No dropped symbols from the previous filtered list.")
+                st.write("No dropped symbols.")
 
         with change_col2:
             st.markdown("**Biggest score movers**")
             if movers_df.empty:
                 st.write("No overlapping symbols to compare.")
             else:
-                movers_display = movers_df.head(5).copy()
-                st.dataframe(movers_display, use_container_width=True)
+                st.dataframe(movers_df.head(5), use_container_width=True)
 
 
 # ---------------------------
@@ -849,13 +802,77 @@ with tab_ranked:
     if ranked_df.empty:
         st.warning("No ranked setups available.")
     else:
+        default_max_dte = int(ranked_df["dte"].max()) if "dte" in ranked_df.columns else int(cfg.max_dte)
+
+        st.markdown("### Filter the ranked list")
+        rank_filter_col1, rank_filter_col2, rank_filter_col3 = st.columns(3)
+
+        with rank_filter_col1:
+            min_confidence = st.selectbox(
+                "Minimum confidence",
+                ["Any", "Medium", "High"],
+                index=0,
+                key="ranked_min_confidence",
+            )
+            technical_filter = st.selectbox(
+                "Minimum technical label",
+                ["Any", "Cautious", "Mixed", "Supportive", "Strongly supportive"],
+                index=0,
+                key="ranked_technical_filter",
+            )
+
+        with rank_filter_col2:
+            min_yield = st.slider(
+                "Minimum annualized yield",
+                min_value=0.00,
+                max_value=0.50,
+                value=0.00,
+                step=0.01,
+                key="ranked_min_yield",
+            )
+            min_cushion = st.slider(
+                "Minimum break-even cushion",
+                min_value=0.00,
+                max_value=0.30,
+                value=0.00,
+                step=0.01,
+                key="ranked_min_cushion",
+            )
+
+        with rank_filter_col3:
+            max_dte_filter = st.slider(
+                "Maximum DTE",
+                min_value=1,
+                max_value=max(365, default_max_dte),
+                value=default_max_dte,
+                step=1,
+                key="ranked_max_dte_filter",
+            )
+            clean_only = st.checkbox(
+                "Show only setups with no warning flags",
+                value=False,
+                key="ranked_clean_only",
+            )
+
+        filtered_ranked_df = filter_ranked_df(
+            ranked_df,
+            min_confidence=min_confidence,
+            min_yield=min_yield,
+            min_cushion=min_cushion,
+            technical_filter=technical_filter,
+            max_dte_filter=max_dte_filter,
+            clean_only=clean_only,
+        )
+
+        st.markdown("### Compare candidates")
         sort_col = st.selectbox(
             "Sort ranked setups by",
             options=[
                 "final_score",
-                "pres",
+                "decision_status",
                 "annualized_secured_yield",
                 "breakeven_discount_pct",
+                "pres",
                 "stock_score",
                 "contract_score",
                 "distance_to_support_pct",
@@ -873,25 +890,26 @@ with tab_ranked:
         default_cols = [
             "rank",
             "symbol",
-            "company_name",
             "expiration",
             "dte",
             "strike",
             "premium",
             "entry_limit",
-            "breakeven",
             "breakeven_discount_pct",
             "annualized_secured_yield",
             "technical_label",
+            "decision_status",
             "final_score",
             "confidence",
             "risks",
         ]
 
         advanced_cols = [
+            "company_name",
             "sector",
             "stock_price",
             "delta_abs",
+            "breakeven",
             "entry_low",
             "entry_high",
             "trend_state",
@@ -909,6 +927,14 @@ with tab_ranked:
         available_cols = [col for col in display_cols if col in ranked_sorted.columns]
         st.dataframe(ranked_sorted[available_cols], use_container_width=True)
 
+        if not ranked_sorted.empty:
+            with st.expander("Filtered list summary", expanded=False):
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("Filtered setups", len(ranked_sorted))
+                s2.metric("Ready", int(ranked_sorted["decision_status"].eq("Ready").sum()))
+                s3.metric("Review", int(ranked_sorted["decision_status"].eq("Review").sum()))
+                s4.metric("Pass", int(ranked_sorted["decision_status"].eq("Pass").sum()))
+
 
 # ---------------------------
 # Contract details
@@ -919,14 +945,12 @@ with tab_details:
     if not all_recommendations:
         st.warning("No contract details available.")
     else:
-        default_symbol = all_recommendations[0].symbol
-        if not filtered_ranked_df.empty and "symbol" in filtered_ranked_df.columns:
-            default_symbol = filtered_ranked_df.sort_values("final_score", ascending=False).iloc[0]["symbol"]
+        default_symbol = st.session_state.selected_detail_symbol or all_recommendations[0].symbol
 
         symbol_options = [rec.symbol for rec in all_recommendations]
         default_index = symbol_options.index(default_symbol) if default_symbol in symbol_options else 0
         selected_symbol = st.selectbox("Select symbol", symbol_options, index=default_index)
-        st.caption("Tip: this defaults to the top currently filtered setup.")
+        st.session_state.selected_detail_symbol = selected_symbol
 
         selected_rec = next(rec for rec in all_recommendations if rec.symbol == selected_symbol)
         c = selected_rec.selected_contract
@@ -940,130 +964,138 @@ with tab_details:
             selected_rec.scores.final_score,
         )
 
-        st.markdown("## Recommended trade")
-        summary_lines = describe_trade_setup(selected_rec)
-        for line in summary_lines:
-            st.write(line)
+        row_for_status = recommendation_to_row(selected_rec)
+        decision_status = row_for_status.get("decision_status", "Review")
 
-        a1, a2, a3, a4, a5 = st.columns(5)
-        a1.metric("Contract", f"{selected_rec.symbol} {fmt_num(c.strike)}P")
-        a2.metric("Suggested entry", fmt_num(selected_rec.suggested_entry_limit))
-        a3.metric("50% take-profit", fmt_num(selected_rec.profit_take_debit))
-        a4.metric("Break-even", fmt_num(c.breakeven_price))
-        a5.metric("Confidence", selected_rec.confidence_level)
+        with st.expander("Trade summary", expanded=True):
+            st.markdown("## Recommended trade")
+            summary_lines = describe_trade_setup(selected_rec)
+            for line in summary_lines:
+                st.write(line)
 
-        b1, b2, b3 = st.columns(3)
-        b1.metric("Annualized yield", fmt_pct(c.annualized_secured_yield))
-        b2.metric("Break-even cushion", fmt_pct(c.breakeven_discount_pct))
-        b3.metric("Defensive review", fmt_num(selected_rec.defensive_review_price))
+            a1, a2, a3, a4, a5, a6 = st.columns(6)
+            a1.metric("Decision", decision_status)
+            a2.metric("Contract", f"{selected_rec.symbol} {fmt_num(c.strike)}P")
+            a3.metric("Suggested entry", fmt_num(selected_rec.suggested_entry_limit))
+            a4.metric("50% take-profit", fmt_num(selected_rec.profit_take_debit))
+            a5.metric("Break-even", fmt_num(c.breakeven_price))
+            a6.metric("Confidence", selected_rec.confidence_level)
 
-        st.markdown("## Why this setup stands out")
-        if selected_rec.top_reasons:
-            for reason in selected_rec.top_reasons:
-                st.write(f"- {reason}")
-        else:
-            st.write("No key strengths available.")
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("Annualized yield", fmt_pct(c.annualized_secured_yield))
+            b2.metric("Break-even cushion", fmt_pct(c.breakeven_discount_pct))
+            b3.metric("Defensive review", fmt_num(selected_rec.defensive_review_price))
+            b4.metric("Score gap vs next best", fmt_num(separation.get("separation_gap")))
 
-        st.markdown("## Trade plan")
-        st.write(f"- Try to enter around **{fmt_num(selected_rec.suggested_entry_limit)}**.")
-        st.write(f"- Standard profit-taking level: **buy to close near {fmt_num(selected_rec.profit_take_debit)}**.")
-        st.write(f"- Faster/aggressive take-profit level: **{fmt_num(selected_rec.fast_profit_take_debit)}**.")
-        st.write(f"- Review the trade if the stock approaches **{fmt_num(selected_rec.defensive_review_price)}**.")
-        if selected_rec.entry_notes:
-            st.write(f"- Entry note: {selected_rec.entry_notes}")
+        with st.expander("Why this works", expanded=True):
+            st.markdown("### Why this setup stands out")
+            if selected_rec.top_reasons:
+                for reason in selected_rec.top_reasons:
+                    st.write(f"- {reason}")
+            else:
+                st.write("No key strengths available.")
 
-        st.markdown("## Chart / technical read")
+            st.markdown("### Trade plan")
+            st.write(f"- Try to enter around **{fmt_num(selected_rec.suggested_entry_limit)}**.")
+            st.write(f"- Standard profit-taking level: **buy to close near {fmt_num(selected_rec.profit_take_debit)}**.")
+            st.write(f"- Faster/aggressive take-profit level: **{fmt_num(selected_rec.fast_profit_take_debit)}**.")
+            st.write(f"- Review the trade if the stock approaches **{fmt_num(selected_rec.defensive_review_price)}**.")
+            if selected_rec.entry_notes:
+                st.write(f"- Entry note: {selected_rec.entry_notes}")
 
-        tc1, tc2, tc3 = st.columns(3)
-        tc1.metric("Trend state", tech.get("trend_state", "Unknown"))
-        tc2.metric("20D MA", fmt_num(tech.get("ma20")))
-        tc3.metric("50D MA", fmt_num(tech.get("ma50")))
+            st.markdown("### Trade separation")
+            s1, s2 = st.columns(2)
+            s1.metric("Trade separation", separation.get("separation_label"))
+            s2.metric("Score gap vs next best", fmt_num(separation.get("separation_gap")))
+            st.write(separation.get("separation_text"))
 
-        tc4, tc5, tc6 = st.columns(3)
-        tc4.metric("ATR(14)", fmt_num(tech.get("atr14")))
-        tc5.metric("RSI(14)", fmt_num(tech.get("rsi14")))
-        tc6.metric("Support zone", fmt_num(tech.get("support_zone")))
+            st.markdown("### Watchouts")
+            if selected_rec.top_risks:
+                for risk in selected_rec.top_risks:
+                    st.write(f"- {risk}")
+            else:
+                st.write("No major watchouts identified.")
 
-        tc7, tc8, tc9 = st.columns(3)
-        tc7.metric("20D resistance", fmt_num(tech.get("resistance_20d")))
-        tc8.metric("Distance to support", fmt_pct(tech.get("distance_to_support_pct")))
-        tc9.metric("Cushion in ATRs", fmt_num(tech.get("cushion_atr_units")))
+            if selected_rec.warning_flags:
+                st.write(f"Warning flags: {', '.join(selected_rec.warning_flags)}")
 
-        tc10, tc11, tc12 = st.columns(3)
-        tc10.metric("Break-even vs support", fmt_num(tech.get("breakeven_vs_support")))
-        tc11.metric("Realized vol (20D)", fmt_pct(tech.get("realized_vol_20d")))
-        tc12.metric("IV / RV ratio", fmt_num(tech.get("iv_rv_ratio")))
+        with st.expander("Technicals", expanded=False):
+            st.markdown("### Chart / technical read")
 
-        tc13 = st.columns(1)[0]
-        tc13.metric(
-            "Break-even below support?",
-            "Yes" if tech.get("breakeven_vs_support") is not None and tech.get("breakeven_vs_support") < 0 else "No"
-        )
+            tc1, tc2, tc3 = st.columns(3)
+            tc1.metric("Trend state", tech.get("trend_state", "Unknown"))
+            tc2.metric("20D MA", fmt_num(tech.get("ma20")))
+            tc3.metric("50D MA", fmt_num(tech.get("ma50")))
 
-        st.markdown("### Price chart")
-        hist = market_provider.get_price_history(selected_symbol)
-        render_price_chart(hist, tech, c.breakeven_price)
+            tc4, tc5, tc6 = st.columns(3)
+            tc4.metric("ATR(14)", fmt_num(tech.get("atr14")))
+            tc5.metric("RSI(14)", fmt_num(tech.get("rsi14")))
+            tc6.metric("Support zone", fmt_num(tech.get("support_zone")))
 
-        st.markdown("## What the technicals mean")
-        t1, t2 = st.columns(2)
-        t1.metric("Technical context score", fmt_num(tech_summary.get("technical_score")))
-        t2.metric("Technical context label", tech_summary.get("technical_label", "Unknown"))
+            tc7, tc8, tc9 = st.columns(3)
+            tc7.metric("20D resistance", fmt_num(tech.get("resistance_20d")))
+            tc8.metric("Distance to support", fmt_pct(tech.get("distance_to_support_pct")))
+            tc9.metric("Cushion in ATRs", fmt_num(tech.get("cushion_atr_units")))
 
-        explanations = tech_summary.get("technical_explanations", [])
-        if explanations:
-            for item in explanations:
-                st.write(f"- {item}")
-        else:
-            st.write("No technical interpretation available.")
+            tc10, tc11, tc12 = st.columns(3)
+            tc10.metric("Break-even vs support", fmt_num(tech.get("breakeven_vs_support")))
+            tc11.metric("Realized vol (20D)", fmt_pct(tech.get("realized_vol_20d")))
+            tc12.metric("IV / RV ratio", fmt_num(tech.get("iv_rv_ratio")))
 
-        st.markdown("## How this affects confidence")
-        technical_score = tech_summary.get("technical_score")
-        if technical_score is None:
-            st.write(
-                "Technical context could not be fully assessed, so confidence is being driven mostly by liquidity, yield, and break-even factors."
-            )
-        elif technical_score >= 80:
-            st.success(
-                "Technical context is supportive. Trend, support, ATR cushion, and relative value strengthen confidence in the trade."
-            )
-        elif technical_score >= 60:
-            st.info(
-                "Technical context is mildly supportive. The scanner still likes the trade, and the chart/value backdrop is helping rather than hurting."
-            )
-        elif technical_score >= 40:
-            st.warning(
-                "Technical context is neutral. The trade may still work, but the chart/value backdrop is not adding much extra edge."
-            )
-        else:
-            st.error(
-                "Technical context is weak. That lowers confidence even if the option metrics themselves still look attractive."
+            tc13 = st.columns(1)[0]
+            tc13.metric(
+                "Break-even below support?",
+                "Yes" if tech.get("breakeven_vs_support") is not None and tech.get("breakeven_vs_support") < 0 else "No"
             )
 
-        st.markdown("## How clearly this trade beats the alternatives")
-        s1, s2 = st.columns(2)
-        s1.metric("Trade separation", separation.get("separation_label"))
-        s2.metric("Score gap vs next best", fmt_num(separation.get("separation_gap")))
-        st.write(separation.get("separation_text"))
+            st.markdown("### Price chart")
+            hist = market_provider.get_price_history(selected_symbol)
+            render_price_chart(hist, tech, c.breakeven_price)
 
-        st.markdown("## Watchouts")
-        if selected_rec.top_risks:
-            for risk in selected_rec.top_risks:
-                st.write(f"- {risk}")
-        else:
-            st.write("No major watchouts identified.")
+            st.markdown("### What the technicals mean")
+            t1, t2 = st.columns(2)
+            t1.metric("Technical context score", fmt_num(tech_summary.get("technical_score")))
+            t2.metric("Technical context label", tech_summary.get("technical_label", "Unknown"))
 
-        if selected_rec.warning_flags:
-            st.write(f"Warning flags: {', '.join(selected_rec.warning_flags)}")
+            explanations = tech_summary.get("technical_explanations", [])
+            if explanations:
+                for item in explanations:
+                    st.write(f"- {item}")
+            else:
+                st.write("No technical interpretation available.")
 
-        st.markdown("## Other valid puts on this stock")
-        if not all_symbol_recs:
-            st.write("No qualifying contracts stored for this stock.")
-        else:
-            contract_rows = []
-            for rec in all_symbol_recs:
-                contract = rec.selected_contract
-                contract_rows.append(
-                    {
+            st.markdown("### How this affects confidence")
+            technical_score = tech_summary.get("technical_score")
+            if technical_score is None:
+                st.write(
+                    "Technical context could not be fully assessed, so confidence is being driven mostly by liquidity, yield, and break-even factors."
+                )
+            elif technical_score >= 80:
+                st.success(
+                    "Technical context is supportive. Trend, support, ATR cushion, and relative value strengthen confidence in the trade."
+                )
+            elif technical_score >= 60:
+                st.info(
+                    "Technical context is mildly supportive. The scanner still likes the trade, and the chart/value backdrop is helping rather than hurting."
+                )
+            elif technical_score >= 40:
+                st.warning(
+                    "Technical context is neutral. The trade may still work, but the chart/value backdrop is not adding much extra edge."
+                )
+            else:
+                st.error(
+                    "Technical context is weak. That lowers confidence even if the option metrics themselves still look attractive."
+                )
+
+        with st.expander("Alternatives on this stock", expanded=False):
+            st.markdown("### Other valid puts on this stock")
+            if not all_symbol_recs:
+                st.write("No qualifying contracts stored for this stock.")
+            else:
+                contract_rows = []
+                for rec in all_symbol_recs:
+                    contract = rec.selected_contract
+                    contract_row = {
                         "symbol": rec.symbol,
                         "expiration": contract.expiration_date,
                         "dte": contract.dte,
@@ -1085,50 +1117,67 @@ with tab_details:
                         "technical_label": getattr(rec, "_technical_label", None),
                         "reasons": "; ".join(rec.top_reasons),
                         "risks": "; ".join(rec.top_risks),
+                        "warning_flags": "; ".join(rec.warning_flags),
                     }
+                    contract_row["decision_status"] = derive_decision_status(contract_row)
+                    contract_rows.append(contract_row)
+
+                contract_df = pd.DataFrame(contract_rows)
+
+                contract_sort = st.selectbox(
+                    "Sort contracts by",
+                    options=[
+                        "final_score",
+                        "decision_status",
+                        "annualized_secured_yield",
+                        "breakeven_discount_pct",
+                        "contract_score",
+                        "delta_abs",
+                        "dte",
+                    ],
+                    index=0,
+                    key="contract_sort_select",
                 )
 
-            contract_df = pd.DataFrame(contract_rows)
+                contract_df = contract_df.sort_values(contract_sort, ascending=False).reset_index(drop=True)
+                contract_df.insert(0, "rank", range(1, len(contract_df) + 1))
 
-            contract_sort = st.selectbox(
-                "Sort contracts by",
-                options=[
-                    "final_score",
-                    "pres",
-                    "annualized_secured_yield",
-                    "breakeven_discount_pct",
-                    "contract_score",
-                    "delta_abs",
+                contract_display_cols = [
+                    "rank",
+                    "expiration",
                     "dte",
-                ],
-                index=0,
-                key="contract_sort_select",
-            )
-
-            contract_df = contract_df.sort_values(contract_sort, ascending=False).reset_index(drop=True)
-            contract_df.insert(0, "rank", range(1, len(contract_df) + 1))
-
-            st.dataframe(contract_df, use_container_width=True)
-
-        with st.expander("Advanced scoring details"):
-            score_breakdown = pd.DataFrame(
-                [
-                    {"component": "quality_score", "value": selected_rec.scores.quality_score},
-                    {"component": "event_stability_score", "value": selected_rec.scores.event_stability_score},
-                    {"component": "options_market_quality_score", "value": selected_rec.scores.options_market_quality_score},
-                    {"component": "assignment_comfort_score", "value": selected_rec.scores.assignment_comfort_score},
-                    {"component": "stock_score_total", "value": selected_rec.scores.stock_score_total},
-                    {"component": "breakeven_score", "value": selected_rec.scores.breakeven_score},
-                    {"component": "secured_yield_score", "value": selected_rec.scores.secured_yield_score},
-                    {"component": "delta_fit_score", "value": selected_rec.scores.delta_fit_score},
-                    {"component": "liquidity_score", "value": selected_rec.scores.liquidity_score},
-                    {"component": "dte_fit_score", "value": selected_rec.scores.dte_fit_score},
-                    {"component": "contract_score_total", "value": selected_rec.scores.contract_score_total},
-                    {"component": "pres_normalized", "value": selected_rec.scores.pres_normalized},
-                    {"component": "final_score", "value": selected_rec.scores.final_score},
+                    "strike",
+                    "premium",
+                    "entry_limit",
+                    "breakeven_discount_pct",
+                    "annualized_secured_yield",
+                    "decision_status",
+                    "final_score",
+                    "confidence",
+                    "risks",
                 ]
-            )
-            st.dataframe(score_breakdown, use_container_width=True)
+                available_cols = [col for col in contract_display_cols if col in contract_df.columns]
+                st.dataframe(contract_df[available_cols], use_container_width=True)
+
+            with st.expander("Advanced scoring details", expanded=False):
+                score_breakdown = pd.DataFrame(
+                    [
+                        {"component": "quality_score", "value": selected_rec.scores.quality_score},
+                        {"component": "event_stability_score", "value": selected_rec.scores.event_stability_score},
+                        {"component": "options_market_quality_score", "value": selected_rec.scores.options_market_quality_score},
+                        {"component": "assignment_comfort_score", "value": selected_rec.scores.assignment_comfort_score},
+                        {"component": "stock_score_total", "value": selected_rec.scores.stock_score_total},
+                        {"component": "breakeven_score", "value": selected_rec.scores.breakeven_score},
+                        {"component": "secured_yield_score", "value": selected_rec.scores.secured_yield_score},
+                        {"component": "delta_fit_score", "value": selected_rec.scores.delta_fit_score},
+                        {"component": "liquidity_score", "value": selected_rec.scores.liquidity_score},
+                        {"component": "dte_fit_score", "value": selected_rec.scores.dte_fit_score},
+                        {"component": "contract_score_total", "value": selected_rec.scores.contract_score_total},
+                        {"component": "pres_normalized", "value": selected_rec.scores.pres_normalized},
+                        {"component": "final_score", "value": selected_rec.scores.final_score},
+                    ]
+                )
+                st.dataframe(score_breakdown, use_container_width=True)
 
 
 # ---------------------------
