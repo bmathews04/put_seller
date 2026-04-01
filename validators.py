@@ -17,6 +17,7 @@ def _reset_contract_validation(contract: OptionContract) -> None:
     contract.contract_exclusion_reasons = []
     contract.contract_hard_fail_reasons = []
     contract.contract_warning_reasons = []
+    contract._debug_earnings_classification = None
 
 
 def _add_stock_hard_fail(metrics: StockMetrics, reason: str) -> None:
@@ -141,15 +142,20 @@ def validate_contract(
         if metrics.days_to_earnings is None:
             if cfg.strict_earnings_date_handling:
                 _add_contract_hard_fail(contract, "earnings_date_unknown")
+                contract._debug_earnings_classification = "hard_fail_unknown_earnings"
             else:
                 _add_contract_warning(contract, "earnings_date_unknown")
+                contract._debug_earnings_classification = "warning_unknown_earnings"
         elif metrics.days_to_earnings <= contract.dte:
             _add_contract_hard_fail(contract, "earnings_before_expiry")
+            contract._debug_earnings_classification = "hard_fail_known_earnings_before_expiry"
     elif metrics is not None:
         if metrics.days_to_earnings is None:
             _add_contract_warning(contract, "earnings_date_unknown")
+            contract._debug_earnings_classification = "warning_unknown_earnings"
         elif metrics.days_to_earnings <= contract.dte:
             _add_contract_warning(contract, "earnings_before_expiry")
+            contract._debug_earnings_classification = "warning_known_earnings_before_expiry"
 
     if contract.open_interest is None and contract.volume is None:
         _add_contract_hard_fail(contract, "missing_oi_and_volume")
