@@ -614,9 +614,16 @@ if run_scan:
 
             contract_hard_fail_lists = []
             contract_warning_lists = []
+
+            earnings_debug_counts = {}
             for c in contracts:
                 hard_reasons = list(getattr(c, "contract_hard_fail_reasons", []))
                 warning_reasons = list(getattr(c, "contract_warning_reasons", []))
+
+                debug_label = getattr(c, "_debug_earnings_classification", None)
+                if debug_label:
+                    earnings_debug_counts[debug_label] = earnings_debug_counts.get(debug_label, 0) + 1
+
                 if hard_reasons:
                     contract_hard_fail_lists.append(hard_reasons)
                 if warning_reasons:
@@ -624,6 +631,7 @@ if run_scan:
 
             results_by_symbol[symbol]["contract_hard_fail_reasons"] = contract_hard_fail_lists
             results_by_symbol[symbol]["contract_warning_reasons"] = contract_warning_lists
+            results_by_symbol[symbol]["earnings_debug_counts"] = earnings_debug_counts
 
             if recs:
                 hist = market_provider.get_price_history(symbol)
@@ -862,6 +870,31 @@ with tab_diagnostics:
             st.write("No contract-level warnings recorded.")
         else:
             st.dataframe(contract_warn_df, use_container_width=True)
+
+    st.markdown("### Earnings classification debug")
+
+    earnings_debug_rows = []
+    for symbol, payload in results_by_symbol.items():
+        for label, count in payload.get("earnings_debug_counts", {}).items():
+            earnings_debug_rows.append(
+                {
+                    "symbol": symbol,
+                    "classification": label,
+                    "count": count,
+                }
+            )
+
+    if earnings_debug_rows:
+        earnings_debug_df = pd.DataFrame(earnings_debug_rows)
+        summary_df = (
+            earnings_debug_df.groupby("classification", dropna=False)["count"]
+            .sum()
+            .reset_index()
+            .sort_values("count", ascending=False)
+        )
+        st.dataframe(summary_df, use_container_width=True)
+    else:
+        st.write("No earnings debug rows recorded.")
 
 with tab_debug:
     st.subheader("Debug / Validation")
