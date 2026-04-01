@@ -17,7 +17,8 @@ from decisioning import confidence_rank, technical_rank, derive_decision_status
 
 st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
-st.markdown("""
+st.markdown(
+    """
 <style>
 .block-container {
     padding-top: 1.2rem;
@@ -94,32 +95,27 @@ h1, h2, h3 {
     opacity: 0.85;
 }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-if "scan_completed" not in st.session_state:
-    st.session_state.scan_completed = False
-if "all_recommendations" not in st.session_state:
-    st.session_state.all_recommendations = []
-if "results_by_symbol" not in st.session_state:
-    st.session_state.results_by_symbol = {}
-if "ranked_df" not in st.session_state:
-    st.session_state.ranked_df = pd.DataFrame()
-if "previous_ranked_df" not in st.session_state:
-    st.session_state.previous_ranked_df = pd.DataFrame()
-if "stock_excl_df" not in st.session_state:
-    st.session_state.stock_excl_df = pd.DataFrame()
-if "contract_excl_df" not in st.session_state:
-    st.session_state.contract_excl_df = pd.DataFrame()
-if "stock_warn_df" not in st.session_state:
-    st.session_state.stock_warn_df = pd.DataFrame()
-if "contract_warn_df" not in st.session_state:
-    st.session_state.contract_warn_df = pd.DataFrame()
-if "scan_summary" not in st.session_state:
-    st.session_state.scan_summary = {}
-if "last_scan_cfg" not in st.session_state:
-    st.session_state.last_scan_cfg = None
-if "selected_detail_symbol" not in st.session_state:
-    st.session_state.selected_detail_symbol = None
+SESSION_DEFAULTS = {
+    "scan_completed": False,
+    "all_recommendations": [],
+    "results_by_symbol": {},
+    "ranked_df": pd.DataFrame(),
+    "previous_ranked_df": pd.DataFrame(),
+    "stock_excl_df": pd.DataFrame(),
+    "contract_excl_df": pd.DataFrame(),
+    "stock_warn_df": pd.DataFrame(),
+    "contract_warn_df": pd.DataFrame(),
+    "scan_summary": {},
+    "last_scan_cfg": None,
+    "selected_detail_symbol": None,
+}
+for key, value in SESSION_DEFAULTS.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 
 def fmt_pct(value):
@@ -259,6 +255,112 @@ def top_reason(df: pd.DataFrame):
     return row["reason"], int(row["count"])
 
 
+def summarize_provider_issues(results_by_symbol):
+    rows = []
+
+    for symbol, payload in results_by_symbol.items():
+        provider_errors = payload.get("provider_detail_errors", []) or []
+        exception_text = payload.get("exception")
+
+        fetch_status = "ok"
+        if exception_text:
+            fetch_status = "exception"
+        elif provider_errors:
+            fetch_status = "provider_warning"
+
+        stock_hard_fails = payload.get("stock_hard_fail_reasons", []) or []
+        no_option_chain = "no_option_chain" in stock_hard_fails
+        no_valid_contracts = "no_valid_contracts" in stock_hard_fails
+
+        earnings_debug_counts = payload.get("earnings_debug_counts", {}) or {}
+        unknown_earnings_contracts = int(
+            earnings_debug_counts.get("hard_fail_unknown_earnings", 0)
+            + earnings_debug_counts.get("warning_unknown_earnings", 0)
+        )
+
+        rows.append(
+            {
+                "symbol": symbol,
+                "fetch_status": fetch_status,
+                "contract_count": int(payload.get("contract_count", 0) or 0),
+                "recommendation_count": int(payload.get("recommendation_count", 0) or 0),
+                "no_option_chain": no_option_chain,
+                "no_valid_contracts": no_valid_contracts,
+                "unknown_earnings_contracts": unknown_earnings_contracts,
+                "provider_error_count": len(provider_errors),
+                "provider_errors": "; ".join(str(x) for x in provider_errors),
+                "exception": exception_text or "",
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "symbol",
+                "fetch_status",
+                "contract_count",
+                "recommendation_count",
+                "no_option_chain",
+                "no_valid_contracts",
+                "unknown_earnings_contracts",
+                "provider_error_count",
+                "provider_errors",
+                "exception",
+            ]
+        )
+
+    return pd.DataFrame(rows).sort_values(
+        ["fetch_status", "provider_error_count", "unknown_earnings_contracts", "contract_count", "symbol"],
+        ascending=[True, False, False, True, True],
+    ).reset_index(drop=True)
+
+
+def build_scan_health_summary(results_by_symbol):
+    total_symbols = len(results_by_symbol)
+
+    exception_count = 0
+    provider_warning_count = 0
+    no_option_chain_count = 0
+    no_valid_contracts_count = 0
+    contracts_pulled_count = 0
+    symbols_with_unknown_earnings = 0
+    unknown_earnings_contracts_total = 0
+
+    for payload in results_by_symbol.values():
+        if payload.get("exception"):
+            exception_count += 1
+        elif payload.get("provider_detail_errors"):
+            provider_warning_count += 1
+
+        stock_hard_fails = payload.get("stock_hard_fail_reasons", []) or []
+        if "no_option_chain" in stock_hard_fails:
+            no_option_chain_count += 1
+        if "no_valid_contracts" in stock_hard_fails:
+            no_valid_contracts_count += 1
+        if int(payload.get("contract_count", 0) or 0) > 0:
+            contracts_pulled_count += 1
+
+        earnings_debug_counts = payload.get("earnings_debug_counts", {}) or {}
+        unknown_count = int(
+            earnings_debug_counts.get("hard_fail_unknown_earnings", 0)
+            + earnings_debug_counts.get("warning_unknown_earnings", 0)
+        )
+        unknown_earnings_contracts_total += unknown_count
+        if unknown_count > 0:
+            symbols_with_unknown_earnings += 1
+
+    return {
+        "symbols_scanned": total_symbols,
+        "symbols_with_exceptions": exception_count,
+        "symbols_with_provider_warnings": provider_warning_count,
+        "symbols_with_contracts_pulled": contracts_pulled_count,
+        "symbols_with_no_option_chain": no_option_chain_count,
+        "symbols_with_no_valid_contracts": no_valid_contracts_count,
+        "symbols_with_unknown_earnings": symbols_with_unknown_earnings,
+        "unknown_earnings_contracts_total": unknown_earnings_contracts_total,
+    }
+
+
 def build_zero_setups_summary(scan_summary, stock_excl_df, contract_excl_df, stock_warn_df, contract_warn_df):
     if scan_summary.get("symbols_with_recommendations", 0) > 0:
         return None
@@ -270,26 +372,30 @@ def build_zero_setups_summary(scan_summary, stock_excl_df, contract_excl_df, sto
 
     suggestions = []
 
+    if scan_summary.get("symbols_with_exceptions", 0) > 0:
+        suggestions.append("One or more symbols hit runtime exceptions. Review the provider diagnostics table before loosening filters further.")
+    if scan_summary.get("symbols_with_no_option_chain", 0) > 0 and scan_summary.get("symbols_with_contracts_pulled", 0) == 0:
+        suggestions.append("The scan may not be pulling option chains reliably. Check provider errors and raw fetch diagnostics.")
     if top_contract_fail and top_contract_fail[0] == "earnings_date_unknown":
-        suggestions.append("Turn off strict earnings-date handling or treat unknown earnings dates as warnings.")
+        suggestions.append("Unknown earnings dates are being treated as blocking when earnings exclusion is enabled. Turn off earnings exclusion for live scans, or improve earnings-date coverage in the provider.")
     if top_contract_fail and top_contract_fail[0] in {"oi_below_min", "volume_below_min"}:
-        suggestions.append("Try non-strict data mode or lower minimum OI/volume thresholds.")
+        suggestions.append("Lower OI/volume thresholds or keep strict data mode off.")
     if top_contract_fail and top_contract_fail[0] == "delta_out_of_range":
-        suggestions.append("Widen the delta band slightly, such as 0.10 to 0.25.")
+        suggestions.append("Widen the delta band modestly, such as 0.10 to 0.28.")
     if top_contract_fail and top_contract_fail[0] == "spread_too_wide":
-        suggestions.append("Relax max spread percentage modestly, such as 0.15 to 0.18.")
+        suggestions.append("Relax max spread percentage modestly, such as 0.15 to 0.18 or 0.20.")
     if top_stock_fail and top_stock_fail[0] == "missing_quality_data_required":
         suggestions.append("Turn off require-quality-data unless you want a very strict scan.")
 
     if not suggestions:
-        suggestions.append("Loosen one major gate at a time and re-run: earnings handling, strict data mode, or delta band.")
+        suggestions.append("The scan is running, but contracts are being filtered out. Loosen one major gate at a time and re-run.")
 
     return {
         "top_stock_fail": top_stock_fail,
         "top_contract_fail": top_contract_fail,
         "top_stock_warn": top_stock_warn,
         "top_contract_warn": top_contract_warn,
-        "suggestions": suggestions[:3],
+        "suggestions": suggestions[:4],
     }
 
 
@@ -382,6 +488,7 @@ def render_price_chart(hist: pd.DataFrame, tech: dict, breakeven_price: float | 
     if hist is None or hist.empty:
         st.write("Chart unavailable.")
         return
+
     chart_df = hist.tail(90).copy()
     chart_df["MA20"] = chart_df["Close"].rolling(20).mean()
     chart_df["MA50"] = chart_df["Close"].rolling(50).mean()
@@ -409,16 +516,21 @@ def render_price_chart(hist: pd.DataFrame, tech: dict, breakeven_price: float | 
 def filter_ranked_df(df, min_confidence, min_yield, min_cushion, technical_filter, max_dte_filter, clean_only):
     if df.empty:
         return df.copy()
+
     filtered = df.copy()
     if min_confidence != "Any":
         min_conf_rank = confidence_rank(min_confidence)
         filtered = filtered[filtered["confidence"].apply(lambda x: confidence_rank(x) >= min_conf_rank)]
+
     filtered = filtered[filtered["annualized_secured_yield"].fillna(-999) >= min_yield]
     filtered = filtered[filtered["breakeven_discount_pct"].fillna(-999) >= min_cushion]
+
     if technical_filter != "Any":
         min_tech_rank = technical_rank(technical_filter)
         filtered = filtered[filtered["technical_label"].apply(lambda x: technical_rank(x) >= min_tech_rank)]
+
     filtered = filtered[filtered["dte"].fillna(9999) <= max_dte_filter]
+
     if clean_only:
         filtered = filtered[
             (filtered["warning_count_total"].fillna(0) == 0)
@@ -426,18 +538,23 @@ def filter_ranked_df(df, min_confidence, min_yield, min_cushion, technical_filte
             & (filtered["stock_eligibility_status"] == "eligible")
             & (filtered["decision_status"] == "Ready")
         ]
+
     return filtered
 
 
 def build_scan_changes(current_df, previous_df):
     if current_df.empty and previous_df.empty:
         return [], [], pd.DataFrame(columns=["symbol", "previous_score", "current_score", "score_change"])
+
     current = current_df.copy() if not current_df.empty else pd.DataFrame(columns=["symbol", "final_score"])
     previous = previous_df.copy() if not previous_df.empty else pd.DataFrame(columns=["symbol", "final_score"])
+
     current_symbols = set(current["symbol"].tolist()) if "symbol" in current.columns else set()
     previous_symbols = set(previous["symbol"].tolist()) if "symbol" in previous.columns else set()
+
     new_symbols = sorted(current_symbols - previous_symbols)
     dropped_symbols = sorted(previous_symbols - current_symbols)
+
     movers_df = pd.DataFrame(columns=["symbol", "previous_score", "current_score", "score_change"])
     if "symbol" in current.columns and "symbol" in previous.columns:
         merged = previous[["symbol", "final_score"]].rename(columns={"final_score": "previous_score"}).merge(
@@ -447,7 +564,10 @@ def build_scan_changes(current_df, previous_df):
         )
         if not merged.empty:
             merged["score_change"] = merged["current_score"] - merged["previous_score"]
-            movers_df = merged.reindex(merged["score_change"].abs().sort_values(ascending=False).index).reset_index(drop=True)
+            movers_df = merged.reindex(
+                merged["score_change"].abs().sort_values(ascending=False).index
+            ).reset_index(drop=True)
+
     return new_symbols, dropped_symbols, movers_df
 
 
@@ -463,7 +583,10 @@ def render_action_idea_row(row, idx):
         """,
         unsafe_allow_html=True,
     )
-    st.markdown(eligibility_badge_html(row.get("contract_eligibility_status", "eligible_with_warnings")), unsafe_allow_html=True)
+    st.markdown(
+        eligibility_badge_html(row.get("contract_eligibility_status", "eligible_with_warnings")),
+        unsafe_allow_html=True,
+    )
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Entry", fmt_num(row.get("entry_limit")))
     c2.metric("Yield", fmt_pct(row.get("annualized_secured_yield")))
@@ -478,6 +601,7 @@ def render_action_idea_row(row, idx):
     if row.get("decision_rationale"):
         st.caption(f"Decision rationale: {row.get('decision_rationale')}")
 
+
 MODE_PRESETS = {
     "Loose": {
         "min_dte": 21,
@@ -486,11 +610,11 @@ MODE_PRESETS = {
         "min_abs_delta": 0.10,
         "max_abs_delta": 0.30,
         "target_abs_delta": 0.18,
-        "max_spread_pct": 0.18,
+        "max_spread_pct": 0.20,
         "min_bid": 0.20,
         "min_premium": 0.25,
-        "min_open_interest": 100,
-        "min_volume": 5,
+        "min_open_interest": 50,
+        "min_volume": 1,
         "exclude_earnings_before_expiry": False,
         "strict_earnings_date_handling": False,
         "require_quality_data": False,
@@ -505,15 +629,15 @@ MODE_PRESETS = {
         "min_dte": 25,
         "max_dte": 40,
         "target_dte": 32,
-        "min_abs_delta": 0.12,
-        "max_abs_delta": 0.25,
+        "min_abs_delta": 0.10,
+        "max_abs_delta": 0.28,
         "target_abs_delta": 0.17,
-        "max_spread_pct": 0.15,
-        "min_bid": 0.25,
-        "min_premium": 0.35,
-        "min_open_interest": 250,
-        "min_volume": 10,
-        "exclude_earnings_before_expiry": True,
+        "max_spread_pct": 0.18,
+        "min_bid": 0.20,
+        "min_premium": 0.30,
+        "min_open_interest": 100,
+        "min_volume": 5,
+        "exclude_earnings_before_expiry": False,
         "strict_earnings_date_handling": False,
         "require_quality_data": False,
         "strict_data_mode": False,
@@ -559,7 +683,7 @@ with st.sidebar:
     )
 
     preset = MODE_PRESETS.get(preset_mode, MODE_PRESETS["Balanced"])
-    
+
     max_symbols = st.number_input(
         "Max symbols to scan",
         min_value=10,
@@ -622,21 +746,15 @@ with st.sidebar:
         "Exclude earnings before expiry",
         value=bool(preset["exclude_earnings_before_expiry"]),
     )
+
+    if exclude_earnings:
+        st.caption("When enabled, contracts with unknown earnings dates may be filtered out.")
+
     run_scan = st.button("Run Scan", type="primary")
 
     if st.button("Clear cached results"):
-        st.session_state.scan_completed = False
-        st.session_state.all_recommendations = []
-        st.session_state.results_by_symbol = {}
-        st.session_state.ranked_df = pd.DataFrame()
-        st.session_state.previous_ranked_df = pd.DataFrame()
-        st.session_state.stock_excl_df = pd.DataFrame()
-        st.session_state.contract_excl_df = pd.DataFrame()
-        st.session_state.stock_warn_df = pd.DataFrame()
-        st.session_state.contract_warn_df = pd.DataFrame()
-        st.session_state.scan_summary = {}
-        st.session_state.last_scan_cfg = None
-        st.session_state.selected_detail_symbol = None
+        for key, value in SESSION_DEFAULTS.items():
+            st.session_state[key] = value
         st.rerun()
 
     st.markdown("---")
@@ -713,12 +831,14 @@ st.sidebar.write("require_quality_data =", cfg.require_quality_data)
 st.sidebar.write("strict_data_mode =", cfg.strict_data_mode)
 
 with st.sidebar.expander("Debug config check", expanded=False):
-    st.write({
-        "exclude_earnings_before_expiry": cfg.exclude_earnings_before_expiry,
-        "strict_earnings_date_handling": cfg.strict_earnings_date_handling,
-        "require_quality_data": cfg.require_quality_data,
-        "strict_data_mode": cfg.strict_data_mode,
-    })
+    st.write(
+        {
+            "exclude_earnings_before_expiry": cfg.exclude_earnings_before_expiry,
+            "strict_earnings_date_handling": cfg.strict_earnings_date_handling,
+            "require_quality_data": cfg.require_quality_data,
+            "strict_data_mode": cfg.strict_data_mode,
+        }
+    )
 
 tab_dashboard, tab_ranked, tab_details, tab_diagnostics, tab_debug = st.tabs(
     ["Dashboard", "Ranked Setups", "Contract Details", "Diagnostics", "Debug / Validation"]
@@ -739,7 +859,10 @@ if not run_scan and not st.session_state.scan_completed:
 
 market_provider = YFinanceMarketProvider()
 symbols = TICKERS[: cfg.max_symbols_to_scan] if cfg.max_symbols_to_scan else TICKERS
-metadata_by_symbol = {symbol: TICKER_METADATA.get(symbol, {"company_name": None, "sector": None}) for symbol in symbols}
+metadata_by_symbol = {
+    symbol: TICKER_METADATA.get(symbol, {"company_name": None, "sector": None})
+    for symbol in symbols
+}
 
 if run_scan:
     all_recommendations = []
@@ -750,6 +873,7 @@ if run_scan:
     for idx, symbol in enumerate(symbols, start=1):
         status.write(f"Scanning {symbol} ({idx}/{len(symbols)})")
         progress.progress(idx / len(symbols))
+
         results_by_symbol[symbol] = {
             "stock_eligibility_status": None,
             "stock_hard_fail_reasons": [],
@@ -763,11 +887,13 @@ if run_scan:
             "technical_summary": {},
             "exception": None,
             "provider_detail_errors": [],
+            "earnings_debug_counts": {},
         }
 
         try:
             metrics = market_provider.get_stock_metrics(symbol)
             contracts = market_provider.get_option_contracts(symbol, cfg, stock_metrics=metrics)
+
             results_by_symbol[symbol]["provider_detail_errors"] = list(getattr(market_provider, "last_errors", []))
             results_by_symbol[symbol]["contract_count"] = len(contracts)
 
@@ -784,8 +910,8 @@ if run_scan:
 
             contract_hard_fail_lists = []
             contract_warning_lists = []
-
             earnings_debug_counts = {}
+
             for c in contracts:
                 hard_reasons = list(getattr(c, "contract_hard_fail_reasons", []))
                 warning_reasons = list(getattr(c, "contract_warning_reasons", []))
@@ -806,6 +932,7 @@ if run_scan:
             if recs:
                 hist = market_provider.get_price_history(symbol)
                 top_contract = recs[0].selected_contract
+
                 tech = build_technical_context(
                     hist=hist,
                     stock_price=recs[0].stock_price,
@@ -819,6 +946,8 @@ if run_scan:
                 results_by_symbol[symbol]["technical_context"] = tech
                 results_by_symbol[symbol]["technical_summary"] = tech_summary
 
+                separation = grade_trade_separation(recs)
+
                 for rec in recs:
                     rec._company_name = metadata_by_symbol.get(symbol, {}).get("company_name")
                     rec._sector = metadata_by_symbol.get(symbol, {}).get("sector")
@@ -827,6 +956,7 @@ if run_scan:
                     rec._cushion_atr_units = tech.get("cushion_atr_units")
                     rec._technical_score = tech_summary.get("technical_score")
                     rec._technical_label = tech_summary.get("technical_label")
+                    rec._separation = separation
 
                     decision_status, decision_meta = derive_decision_status(
                         final_score=rec.scores.final_score,
@@ -854,6 +984,7 @@ if run_scan:
                 if not results_by_symbol[symbol]["stock_hard_fail_reasons"]:
                     results_by_symbol[symbol]["stock_eligibility_status"] = "ineligible"
                     results_by_symbol[symbol]["stock_hard_fail_reasons"].append("no_valid_contracts")
+
         except Exception as e:
             results_by_symbol[symbol]["exception"] = str(e)
 
@@ -875,7 +1006,9 @@ if run_scan:
         ranked_rows.append(row)
 
     ranked_df = pd.DataFrame(ranked_rows)
+
     stock_excl_df, contract_excl_df, stock_warn_df, contract_warn_df = summarize_eligibility(results_by_symbol)
+    scan_health = build_scan_health_summary(results_by_symbol)
 
     scan_summary = {
         "symbols_in_universe": len(symbols),
@@ -890,6 +1023,13 @@ if run_scan:
         "ready_count": int(ranked_df["decision_status"].eq("Ready").sum()) if not ranked_df.empty else 0,
         "review_count": int(ranked_df["decision_status"].eq("Review").sum()) if not ranked_df.empty else 0,
         "pass_count": int(ranked_df["decision_status"].eq("Pass").sum()) if not ranked_df.empty else 0,
+        "symbols_with_exceptions": scan_health["symbols_with_exceptions"],
+        "symbols_with_provider_warnings": scan_health["symbols_with_provider_warnings"],
+        "symbols_with_contracts_pulled": scan_health["symbols_with_contracts_pulled"],
+        "symbols_with_no_option_chain": scan_health["symbols_with_no_option_chain"],
+        "symbols_with_no_valid_contracts": scan_health["symbols_with_no_valid_contracts"],
+        "symbols_with_unknown_earnings": scan_health["symbols_with_unknown_earnings"],
+        "unknown_earnings_contracts_total": scan_health["unknown_earnings_contracts_total"],
     }
 
     st.session_state.previous_ranked_df = st.session_state.ranked_df.copy()
@@ -927,8 +1067,14 @@ with tab_dashboard:
     c3.metric("Ready", scan_summary.get("ready_count", 0))
     c4.metric("Review", scan_summary.get("review_count", 0))
     c5.metric("Pass", scan_summary.get("pass_count", 0))
-    c6.metric("Stock warnings", scan_summary.get("symbols_with_stock_warnings", 0))
-    c7.metric("Contract warnings", scan_summary.get("symbols_with_contract_warnings", 0))
+    c6.metric("No option chain", scan_summary.get("symbols_with_no_option_chain", 0))
+    c7.metric("No valid contracts", scan_summary.get("symbols_with_no_valid_contracts", 0))
+
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Symbols with contracts pulled", scan_summary.get("symbols_with_contracts_pulled", 0))
+    d2.metric("Provider warnings", scan_summary.get("symbols_with_provider_warnings", 0))
+    d3.metric("Exceptions", scan_summary.get("symbols_with_exceptions", 0))
+    d4.metric("Unknown earnings contracts", scan_summary.get("unknown_earnings_contracts_total", 0))
 
     zero_summary = build_zero_setups_summary(
         scan_summary=scan_summary,
@@ -942,13 +1088,21 @@ with tab_dashboard:
         st.warning("No recommendations found for this scan.")
         with st.expander("Why no setups were found", expanded=True):
             if zero_summary["top_stock_fail"]:
-                st.write(f"**Top stock-level hard fail:** {zero_summary['top_stock_fail'][0]} ({zero_summary['top_stock_fail'][1]})")
+                st.write(
+                    f"**Top stock-level hard fail:** {zero_summary['top_stock_fail'][0]} ({zero_summary['top_stock_fail'][1]})"
+                )
             if zero_summary["top_contract_fail"]:
-                st.write(f"**Top contract-level hard fail:** {zero_summary['top_contract_fail'][0]} ({zero_summary['top_contract_fail'][1]})")
+                st.write(
+                    f"**Top contract-level hard fail:** {zero_summary['top_contract_fail'][0]} ({zero_summary['top_contract_fail'][1]})"
+                )
             if zero_summary["top_stock_warn"]:
-                st.write(f"**Top stock-level warning:** {zero_summary['top_stock_warn'][0]} ({zero_summary['top_stock_warn'][1]})")
+                st.write(
+                    f"**Top stock-level warning:** {zero_summary['top_stock_warn'][0]} ({zero_summary['top_stock_warn'][1]})"
+                )
             if zero_summary["top_contract_warn"]:
-                st.write(f"**Top contract-level warning:** {zero_summary['top_contract_warn'][0]} ({zero_summary['top_contract_warn'][1]})")
+                st.write(
+                    f"**Top contract-level warning:** {zero_summary['top_contract_warn'][0]} ({zero_summary['top_contract_warn'][1]})"
+                )
 
             st.markdown("**Suggested next adjustments**")
             for suggestion in zero_summary["suggestions"]:
@@ -956,7 +1110,11 @@ with tab_dashboard:
     else:
         dashboard_df = ranked_df.copy()
         dashboard_df["decision_order"] = dashboard_df["decision_status"].map({"Ready": 0, "Review": 1, "Pass": 2}).fillna(9)
-        dashboard_df = dashboard_df.sort_values(["decision_order", "final_score"], ascending=[True, False]).drop(columns=["decision_order"]).reset_index(drop=True)
+        dashboard_df = (
+            dashboard_df.sort_values(["decision_order", "final_score"], ascending=[True, False])
+            .drop(columns=["decision_order"])
+            .reset_index(drop=True)
+        )
 
         best = dashboard_df.iloc[0]
         next_gap = best["final_score"] - dashboard_df.iloc[1]["final_score"] if len(dashboard_df) > 1 else None
@@ -971,7 +1129,10 @@ with tab_dashboard:
         hero5.metric("Suggested entry", fmt_num(best["entry_limit"]))
         hero6.metric("Confidence", best["confidence"])
 
-        st.markdown(eligibility_badge_html(best.get("contract_eligibility_status", "eligible")), unsafe_allow_html=True)
+        st.markdown(
+            eligibility_badge_html(best.get("contract_eligibility_status", "eligible")),
+            unsafe_allow_html=True,
+        )
 
         hero7, hero8, hero9, hero10, hero11, hero12 = st.columns(6)
         hero7.metric("Premium", fmt_num(best["premium"]))
@@ -981,35 +1142,228 @@ with tab_dashboard:
         hero11.metric("Final score", fmt_num(best["final_score"]))
         hero12.metric("Warning severity", best.get("warning_severity_label"))
 
+        if next_gap is not None:
+            st.caption(f"Score gap vs next best idea: {fmt_num(next_gap)}")
+
         st.write(f"**Why it stands out:** {best.get('reasons', '—')}")
         st.write(f"**Decision rationale:** {best.get('decision_rationale', '—')}")
 
+        st.markdown("### Fast action list")
+        for idx, (_, row) in enumerate(dashboard_df.head(5).iterrows(), start=1):
+            render_action_idea_row(row, idx)
+
 with tab_ranked:
     st.subheader("Ranked Setups")
+
     if ranked_df.empty:
         st.warning("No ranked setups available.")
     else:
-        st.dataframe(ranked_df, use_container_width=True)
+        f1, f2, f3, f4, f5, f6 = st.columns(6)
+        min_confidence = f1.selectbox("Min confidence", ["Any", "Low", "Medium", "High"], index=0)
+        min_yield = f2.number_input("Min annualized yield", min_value=0.0, max_value=5.0, value=0.0, step=0.01, format="%.2f")
+        min_cushion = f3.number_input("Min break-even cushion", min_value=0.0, max_value=1.0, value=0.0, step=0.01, format="%.2f")
+        technical_filter = f4.selectbox(
+            "Technical filter",
+            ["Any", "Weak", "Mixed", "Supportive", "Strongly supportive"],
+            index=0,
+        )
+        max_dte_filter = f5.number_input("Max DTE filter", min_value=1, max_value=365, value=int(cfg.max_dte))
+        clean_only = f6.checkbox("Ready + clean only", value=False)
+
+        filtered_ranked_df = filter_ranked_df(
+            ranked_df,
+            min_confidence=min_confidence,
+            min_yield=min_yield,
+            min_cushion=min_cushion,
+            technical_filter=technical_filter,
+            max_dte_filter=max_dte_filter,
+            clean_only=clean_only,
+        )
+
+        st.dataframe(filtered_ranked_df, use_container_width=True)
+
+        if new_symbols or dropped_symbols or not movers_df.empty:
+            with st.expander("Changes vs previous scan", expanded=False):
+                if new_symbols:
+                    st.write("**New symbols:**", ", ".join(new_symbols))
+                if dropped_symbols:
+                    st.write("**Dropped symbols:**", ", ".join(dropped_symbols))
+                if not movers_df.empty:
+                    st.write("**Biggest score movers**")
+                    st.dataframe(movers_df.head(10), use_container_width=True)
 
 with tab_details:
     st.subheader("Contract Details")
+
     if not all_recommendations:
         st.warning("No contract details available.")
     else:
-        selected_symbol = st.selectbox("Select symbol", [rec.symbol for rec in all_recommendations])
+        selected_symbol = st.selectbox(
+            "Select symbol",
+            [rec.symbol for rec in all_recommendations],
+            index=0,
+        )
         selected_rec = next(rec for rec in all_recommendations if rec.symbol == selected_symbol)
+        all_symbol_recs = results_by_symbol.get(selected_symbol, {}).get("recommendations", [])
         c = selected_rec.selected_contract
+        tech = results_by_symbol.get(selected_symbol, {}).get("technical_context", {})
+        tech_summary = results_by_symbol.get(selected_symbol, {}).get("technical_summary", {})
+        separation = getattr(selected_rec, "_separation", {}) or {}
+
         st.markdown(decision_badge_html(selected_rec.decision_status), unsafe_allow_html=True)
         st.markdown(eligibility_badge_html(selected_rec.contract_eligibility_status), unsafe_allow_html=True)
+
+        a1, a2, a3, a4, a5, a6 = st.columns(6)
+        a1.metric("Strike", fmt_num(c.strike))
+        a2.metric("Expiration", c.expiration_date)
+        a3.metric("DTE", c.dte)
+        a4.metric("Premium", fmt_num(c.premium))
+        a5.metric("Break-even", fmt_num(c.breakeven_price))
+        a6.metric("Annualized yield", fmt_pct(c.annualized_secured_yield))
+
+        b1, b2, b3, b4, b5, b6 = st.columns(6)
+        b1.metric("Suggested entry", fmt_num(selected_rec.suggested_entry_limit))
+        b2.metric("Acceptable low", fmt_num(selected_rec.acceptable_entry_low))
+        b3.metric("Acceptable high", fmt_num(selected_rec.acceptable_entry_high))
+        b4.metric("Profit take debit", fmt_num(selected_rec.profit_take_debit))
+        b5.metric("Fast profit take debit", fmt_num(selected_rec.fast_profit_take_debit))
+        b6.metric("Review at DTE", fmt_num(selected_rec.review_at_dte, 0))
+
+        st.markdown("## Trade summary")
+        for line in describe_trade_setup(selected_rec):
+            st.write(f"- {line}")
+
+        st.markdown("## Why the scanner likes it")
+        if selected_rec.top_reasons:
+            for reason in selected_rec.top_reasons:
+                st.write(f"- {reason}")
+        else:
+            st.write("No top reasons stored.")
+
+        st.markdown("## Risk / warning context")
         st.write(f"Decision rationale: {selected_rec.decision_rationale}")
+        st.write(f"Decision blockers: {joined(selected_rec.decision_blockers)}")
+        st.write(f"Decision cautions: {joined(selected_rec.decision_cautions)}")
         st.write(f"Contract warning reasons: {joined(selected_rec.contract_warning_reasons)}")
         st.write(f"Stock warning reasons: {joined(selected_rec.stock_warning_reasons)}")
+
+        tc1, tc2, tc3 = st.columns(3)
+        tc1.metric("Trend state", tech.get("trend_state", "Unknown"))
+        tc2.metric("Distance to support", fmt_pct(tech.get("distance_to_support_pct")))
+        tc3.metric("ATR cushion", fmt_num(tech.get("cushion_atr_units")))
+
+        tc4, tc5, tc6 = st.columns(3)
+        tc4.metric("Technical score", fmt_num(tech_summary.get("technical_score")))
+        tc5.metric("Technical label", tech_summary.get("technical_label", "Unknown"))
+        tc6.metric("Warning severity", selected_rec.warning_severity_label)
+
         hist = market_provider.get_price_history(selected_symbol)
-        tech = results_by_symbol.get(selected_symbol, {}).get("technical_context", {})
+        st.markdown("### Price chart")
         render_price_chart(hist, tech, c.breakeven_price)
+
+        st.markdown("## Technical interpretation")
+        explanations = tech_summary.get("technical_explanations", [])
+        if explanations:
+            for item in explanations:
+                st.write(f"- {item}")
+        else:
+            st.write("No technical interpretation available.")
+
+        st.markdown("## How clearly this trade beats the alternatives")
+        s1, s2 = st.columns(2)
+        s1.metric("Trade separation", separation.get("separation_label"))
+        s2.metric("Score gap vs next best", fmt_num(separation.get("separation_gap")))
+        if separation.get("separation_text"):
+            st.write(separation.get("separation_text"))
+
+        st.markdown("## Watchouts")
+        if selected_rec.top_risks:
+            for risk in selected_rec.top_risks:
+                st.write(f"- {risk}")
+        else:
+            st.write("No major watchouts identified.")
+
+        if selected_rec.warning_flags:
+            st.write(f"Warning flags: {', '.join(selected_rec.warning_flags)}")
+
+        st.markdown("## Other valid puts on this stock")
+        if not all_symbol_recs:
+            st.write("No qualifying contracts stored for this stock.")
+        else:
+            contract_rows = []
+            for rec in all_symbol_recs:
+                contract = rec.selected_contract
+                contract_rows.append(
+                    {
+                        "symbol": rec.symbol,
+                        "expiration": contract.expiration_date,
+                        "dte": contract.dte,
+                        "strike": contract.strike,
+                        "delta_abs": contract.delta_abs,
+                        "premium": contract.premium,
+                        "entry_limit": rec.suggested_entry_limit,
+                        "annualized_secured_yield": contract.annualized_secured_yield,
+                        "breakeven_discount_pct": contract.breakeven_discount_pct,
+                        "final_score": rec.scores.final_score,
+                        "decision_status": rec.decision_status,
+                        "warning_severity_label": rec.warning_severity_label,
+                    }
+                )
+            st.dataframe(pd.DataFrame(contract_rows), use_container_width=True)
 
 with tab_diagnostics:
     st.subheader("Diagnostics")
+
+    st.markdown("### Provider / fetch diagnostics")
+    provider_diag_df = summarize_provider_issues(results_by_symbol)
+
+    if provider_diag_df.empty:
+        st.write("No provider diagnostics available.")
+    else:
+        st.dataframe(provider_diag_df, use_container_width=True)
+
+    exception_rows = (
+        provider_diag_df[provider_diag_df["fetch_status"].isin(["exception", "provider_warning"])]
+        if not provider_diag_df.empty
+        else pd.DataFrame()
+    )
+
+    if not exception_rows.empty:
+        st.markdown("### Symbols with provider warnings or exceptions")
+        st.dataframe(
+            exception_rows[
+                [
+                    "symbol",
+                    "fetch_status",
+                    "contract_count",
+                    "provider_error_count",
+                    "provider_errors",
+                    "exception",
+                ]
+            ],
+            use_container_width=True,
+        )
+
+    unknown_earnings_rows = (
+        provider_diag_df[provider_diag_df["unknown_earnings_contracts"] > 0]
+        if not provider_diag_df.empty
+        else pd.DataFrame()
+    )
+
+    if not unknown_earnings_rows.empty:
+        st.markdown("### Symbols with unknown earnings metadata")
+        st.dataframe(
+            unknown_earnings_rows[
+                [
+                    "symbol",
+                    "contract_count",
+                    "unknown_earnings_contracts",
+                    "recommendation_count",
+                    "no_valid_contracts",
+                ]
+            ].sort_values(["unknown_earnings_contracts", "contract_count"], ascending=[False, False]),
+            use_container_width=True,
+        )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1042,7 +1396,6 @@ with tab_diagnostics:
             st.dataframe(contract_warn_df, use_container_width=True)
 
     st.markdown("### Earnings classification debug")
-
     earnings_debug_rows = []
     for symbol, payload in results_by_symbol.items():
         for label, count in payload.get("earnings_debug_counts", {}).items():
@@ -1068,6 +1421,7 @@ with tab_diagnostics:
 
 with tab_debug:
     st.subheader("Debug / Validation")
+
     debug_mode = st.radio(
         "What are you pasting?",
         options=[
@@ -1083,6 +1437,7 @@ with tab_debug:
     if st.button("Validate pasted content"):
         if debug_mode == "Raw text / traceback":
             st.code(pasted_text)
+
         elif debug_mode == "JSON / dict payload":
             parsed, parser_used, parse_error = try_parse_structured(pasted_text)
             if parsed is None:
@@ -1091,21 +1446,30 @@ with tab_debug:
             else:
                 st.success(f"Parsed successfully using: {parser_used}")
                 st.json(parsed)
+
         elif debug_mode == "Recommendation row":
             parsed, parser_used, parse_error = try_parse_structured(pasted_text)
             if parsed is None or not isinstance(parsed, dict):
                 st.error("Recommendation row should parse into a dictionary-like object.")
+                st.code(pasted_text)
             else:
-                st.success(f"Parsed recommendation row using: {parser_used}")
-                st.json(parsed)
+                st.success(f"Parsed successfully using: {parser_used}")
                 st.dataframe(validate_recommendation_like(parsed), use_container_width=True)
+
         elif debug_mode == "Contract payload":
             parsed, parser_used, parse_error = try_parse_structured(pasted_text)
             if parsed is None or not isinstance(parsed, dict):
                 st.error("Contract payload should parse into a dictionary-like object.")
+                st.code(pasted_text)
             else:
-                st.success(f"Parsed contract payload using: {parser_used}")
-                st.json(parsed)
+                st.success(f"Parsed successfully using: {parser_used}")
                 st.dataframe(validate_contract_like(parsed), use_container_width=True)
+
         else:
-            st.code(pasted_text)
+            try:
+                df = pd.read_csv(pd.io.common.StringIO(pasted_text))
+                st.success("Parsed as CSV-like rows.")
+                st.dataframe(df, use_container_width=True)
+            except Exception as e:
+                st.error(f"Could not parse as CSV-like text: {e}")
+                st.code(pasted_text)
