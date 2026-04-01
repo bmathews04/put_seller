@@ -14,7 +14,7 @@ def derive_contract_metrics(contract: OptionContract, stock_price: float) -> Opt
     else:
         contract.premium = contract.bid
 
-    if contract.mid_price and contract.spread_dollars is not None and contract.mid_price > 0:
+    if contract.mid_price is not None and contract.spread_dollars is not None and contract.mid_price > 0:
         contract.spread_pct = contract.spread_dollars / contract.mid_price
 
     if contract.premium is not None:
