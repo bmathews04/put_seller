@@ -2,6 +2,7 @@ from statistics import median
 
 from config import ScanConfig
 from contract_scoring import build_contract_scorecard
+from decisioning import derive_decision_status
 from derivations import derive_contract_metrics
 from models import OptionContract, Recommendation, ScoreCard, StockMetrics
 from risk_metrics import compute_pres_raw, normalize_pres_values
@@ -291,6 +292,20 @@ def build_recommendations_for_stock(metrics: StockMetrics, raw_contracts: list[O
             cfg=cfg,
         )
 
+        confidence_level = assign_confidence(metrics, contract, stock_scores, c_score, cfg)
+
+        technical_label = getattr(contract, "technical_label", None)
+        decision_status, decision_meta = derive_decision_status(
+            final_score=combined_scores.final_score,
+            confidence=confidence_level,
+            technical_label=technical_label,
+            contract_eligibility_status=getattr(contract, "contract_eligibility_status", "eligible"),
+            stock_eligibility_status=getattr(metrics, "stock_eligibility_status", "eligible"),
+            stock_warning_reasons=getattr(metrics, "stock_warning_reasons", []),
+            contract_warning_reasons=getattr(contract, "contract_warning_reasons", []),
+            warning_flags=flags,
+        )
+
         recommendations.append(
             Recommendation(
                 symbol=contract.symbol,
@@ -311,7 +326,21 @@ def build_recommendations_for_stock(metrics: StockMetrics, raw_contracts: list[O
                 top_reasons=top_reasons,
                 top_risks=top_risks,
                 warning_flags=flags,
-                confidence_level=assign_confidence(metrics, contract, stock_scores, c_score, cfg),
+                confidence_level=confidence_level,
+                stock_eligibility_status=getattr(metrics, "stock_eligibility_status", "eligible"),
+                stock_warning_reasons=list(getattr(metrics, "stock_warning_reasons", [])),
+                contract_eligibility_status=getattr(contract, "contract_eligibility_status", "eligible"),
+                contract_warning_reasons=list(getattr(contract, "contract_warning_reasons", [])),
+                decision_status=decision_status,
+                decision_rationale=decision_meta.get("decision_rationale"),
+                decision_blockers=list(decision_meta.get("decision_blockers", [])),
+                decision_cautions=list(decision_meta.get("decision_cautions", [])),
+                warning_severity_label=decision_meta.get("severity_label", "None"),
+                warning_severity_points=int(decision_meta.get("severity_points", 0)),
+                warning_count_total=int(decision_meta.get("warning_count_total", 0)),
+                high_severity_warning_count=int(decision_meta.get("high_severity_count", 0)),
+                medium_severity_warning_count=int(decision_meta.get("medium_severity_count", 0)),
+                low_severity_warning_count=int(decision_meta.get("low_severity_count", 0)),
             )
         )
 
