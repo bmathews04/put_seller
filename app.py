@@ -538,6 +538,18 @@ cfg = ScanConfig(
     strict_earnings_date_handling=strict_earnings_date_handling,
 )
 
+st.sidebar.write("strict_earnings_date_handling =", cfg.strict_earnings_date_handling)
+st.sidebar.write("require_quality_data =", cfg.require_quality_data)
+st.sidebar.write("strict_data_mode =", cfg.strict_data_mode)
+
+with st.sidebar.expander("Debug config check", expanded=False):
+    st.write({
+        "exclude_earnings_before_expiry": cfg.exclude_earnings_before_expiry,
+        "strict_earnings_date_handling": cfg.strict_earnings_date_handling,
+        "require_quality_data": cfg.require_quality_data,
+        "strict_data_mode": cfg.strict_data_mode,
+    })
+
 tab_dashboard, tab_ranked, tab_details, tab_diagnostics, tab_debug = st.tabs(
     ["Dashboard", "Ranked Setups", "Contract Details", "Diagnostics", "Debug / Validation"]
 )
