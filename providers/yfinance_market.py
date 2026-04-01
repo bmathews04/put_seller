@@ -1,19 +1,48 @@
 from datetime import date, datetime
+from functools import wraps
 
 import pandas as pd
-import streamlit as st
-import yfinance as yf
+
+try:  # pragma: no cover - exercised indirectly in integration runs
+    import yfinance as yf
+except ModuleNotFoundError:  # pragma: no cover - allows unit tests without yfinance installed
+    from types import SimpleNamespace
+
+    yf = SimpleNamespace(Ticker=None)
 
 from config import ScanConfig
 from greeks import black_scholes_put_delta
 from models import OptionContract, StockMetrics
 from providers.yfinance_fundamentals import YFinanceFundamentalsProvider
 
+try:  # pragma: no cover - exercised indirectly in app environments
+    import streamlit as st
+except ModuleNotFoundError:  # pragma: no cover - exercised in test/non-UI environments
+    class _StreamlitFallback:
+        @staticmethod
+        def cache_data(ttl=None, show_spinner=False):
+            def decorator(func):
+                @wraps(func)
+                def wrapper(*args, **kwargs):
+                    return func(*args, **kwargs)
+
+                return wrapper
+
+            return decorator
+
+    st = _StreamlitFallback()
+
 
 # ----------------------------
 # Pure fetch helpers (no Streamlit dependency in behavior)
 # ----------------------------
+def _require_yfinance() -> None:
+    if getattr(yf, "Ticker", None) is None:
+        raise ModuleNotFoundError("yfinance is required for live market data fetches")
+
+
 def _fetch_price_history(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
+    _require_yfinance()
     ticker = yf.Ticker(symbol)
     hist = ticker.history(period=period, interval=interval, auto_adjust=False)
     return hist.copy()
@@ -25,6 +54,7 @@ def _fetch_stock_metrics(symbol: str):
 
 
 def _fetch_option_chain(symbol: str, exp_str: str) -> pd.DataFrame:
+    _require_yfinance()
     ticker = yf.Ticker(symbol)
     chain = ticker.option_chain(exp_str)
     return chain.puts.copy()
@@ -83,6 +113,7 @@ class YFinanceMarketProvider:
     ) -> list[OptionContract]:
         self.last_errors = []
 
+        _require_yfinance()
         ticker = yf.Ticker(symbol)
 
         # Reuse caller-supplied metrics when available to avoid duplicate fetches
