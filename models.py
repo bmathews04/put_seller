@@ -125,3 +125,21 @@ class Recommendation:
     top_risks: list[str] = field(default_factory=list)
     warning_flags: list[str] = field(default_factory=list)
     confidence_level: str = "Medium"
+
+    # Stored decisioning / eligibility summary
+    stock_eligibility_status: str = "eligible"
+    stock_warning_reasons: list[str] = field(default_factory=list)
+    contract_eligibility_status: str = "eligible"
+    contract_warning_reasons: list[str] = field(default_factory=list)
+
+    decision_status: str = "Review"
+    decision_rationale: str | None = None
+    decision_blockers: list[str] = field(default_factory=list)
+    decision_cautions: list[str] = field(default_factory=list)
+
+    warning_severity_label: str = "None"
+    warning_severity_points: int = 0
+    warning_count_total: int = 0
+    high_severity_warning_count: int = 0
+    medium_severity_warning_count: int = 0
+    low_severity_warning_count: int = 0
