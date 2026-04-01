@@ -24,8 +24,16 @@ class StockMetrics:
     quality_data_complete: bool = False
     avg_candidate_chain_spread_pct: float | None = None
     candidate_contract_count: int = 0
+
     stock_valid: bool = True
+    stock_eligibility_status: str = "eligible"
+
+    # Backward-compatible alias used by current UI/reporting paths
     stock_exclusion_reasons: list[str] = field(default_factory=list)
+
+    # New split model
+    stock_hard_fail_reasons: list[str] = field(default_factory=list)
+    stock_warning_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -63,7 +71,14 @@ class OptionContract:
 
     liquidity_valid: bool = True
     contract_valid: bool = True
+    contract_eligibility_status: str = "eligible"
+
+    # Backward-compatible alias used by current UI/reporting paths
     contract_exclusion_reasons: list[str] = field(default_factory=list)
+
+    # New split model
+    contract_hard_fail_reasons: list[str] = field(default_factory=list)
+    contract_warning_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
