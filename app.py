@@ -13,6 +13,7 @@ from technicals import (
     score_technical_context,
     grade_trade_separation,
 )
+from decisioning import derive_decision_status, confidence_rank, technical_rank
 
 st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
@@ -189,24 +190,6 @@ def fmt_num(value, decimals=2):
     return f"{value:.{decimals}f}"
 
 
-def confidence_rank(value):
-    mapping = {"High": 3, "Medium": 2, "Low": 1}
-    return mapping.get(value, 0)
-
-
-def technical_rank(value):
-    mapping = {
-        "Strongly supportive": 4,
-        "Supportive": 3,
-        "Mildly supportive": 3,
-        "Mixed": 2,
-        "Neutral": 2,
-        "Cautious": 1,
-        "Weak": 1,
-    }
-    return mapping.get(value, 0)
-
-
 def decision_emoji(value):
     return {
         "Ready": "🟢",
@@ -243,33 +226,26 @@ def joined(items):
     return "; ".join(items) if items else ""
 
 
-def derive_decision_status(row):
-    confidence = row.get("confidence")
-    technical_label = row.get("technical_label")
-    warning_flags = str(row.get("warning_flags", "") or "").strip()
-    final_score = row.get("final_score")
-
-    if (
-        confidence == "High"
-        and technical_rank(technical_label) >= technical_rank("Supportive")
-        and not warning_flags
-        and final_score is not None
-        and final_score >= 70
-    ):
-        return "Ready"
-
-    if (
-        confidence in {"High", "Medium"}
-        and final_score is not None
-        and final_score >= 55
-    ):
-        return "Review"
-
-    return "Pass"
-
-
 def recommendation_to_row(rec):
     c = rec.selected_contract
+
+    stock_warning_reasons = getattr(rec, "_stock_warning_reasons", [])
+    stock_eligibility_status = getattr(rec, "_stock_eligibility_status", "eligible")
+    contract_warning_reasons = getattr(c, "contract_warning_reasons", [])
+    contract_eligibility_status = getattr(c, "contract_eligibility_status", None)
+    merged_warning_flags = rec.warning_flags or []
+
+    decision_status, decision_meta = derive_decision_status(
+        final_score=rec.scores.final_score,
+        confidence=rec.confidence_level,
+        technical_label=getattr(rec, "_technical_label", None),
+        contract_eligibility_status=contract_eligibility_status,
+        stock_eligibility_status=stock_eligibility_status,
+        stock_warning_reasons=stock_warning_reasons,
+        contract_warning_reasons=contract_warning_reasons,
+        warning_flags=merged_warning_flags,
+    )
+
     row = {
         "symbol": rec.symbol,
         "stock_price": rec.stock_price,
@@ -295,17 +271,29 @@ def recommendation_to_row(rec):
         "confidence": rec.confidence_level,
         "reasons": "; ".join(rec.top_reasons),
         "risks": "; ".join(rec.top_risks),
-        "warning_flags": "; ".join(rec.warning_flags),
+        "warning_flags": "; ".join(merged_warning_flags),
         "trend_state": getattr(rec, "_trend_state", None),
         "distance_to_support_pct": getattr(rec, "_distance_to_support_pct", None),
         "cushion_atr_units": getattr(rec, "_cushion_atr_units", None),
         "technical_score": getattr(rec, "_technical_score", None),
         "technical_label": getattr(rec, "_technical_label", None),
-        "contract_eligibility_status": getattr(c, "contract_eligibility_status", None),
+        "stock_eligibility_status": stock_eligibility_status,
+        "stock_warning_reasons": joined(stock_warning_reasons),
+        "contract_eligibility_status": contract_eligibility_status,
         "contract_hard_fail_reasons": joined(getattr(c, "contract_hard_fail_reasons", [])),
-        "contract_warning_reasons": joined(getattr(c, "contract_warning_reasons", [])),
+        "contract_warning_reasons": joined(contract_warning_reasons),
+        "decision_status": decision_status,
+        "decision_rationale": decision_meta.get("decision_rationale"),
+        "decision_blockers": joined(decision_meta.get("decision_blockers", [])),
+        "decision_cautions": joined(decision_meta.get("decision_cautions", [])),
+        "warning_severity_label": decision_meta.get("severity_label"),
+        "warning_severity_points": decision_meta.get("severity_points"),
+        "warning_count_total": decision_meta.get("warning_count_total"),
+        "high_severity_warning_count": decision_meta.get("high_severity_count"),
+        "medium_severity_warning_count": decision_meta.get("medium_severity_count"),
+        "low_severity_warning_count": decision_meta.get("low_severity_count"),
     }
-    row["decision_status"] = derive_decision_status(row)
+
     return row
 
 
@@ -560,7 +548,9 @@ def filter_ranked_df(
 
     if clean_only:
         filtered = filtered[
-            filtered["warning_flags"].fillna("").str.strip() == ""
+            (filtered["warning_count_total"].fillna(0) == 0)
+            & (filtered["contract_eligibility_status"] == "eligible")
+            & (filtered["stock_eligibility_status"] == "eligible")
         ]
 
     return filtered
@@ -613,12 +603,13 @@ def render_action_idea_row(row, idx):
 
     st.markdown(eligibility_badge_html(eligibility_status), unsafe_allow_html=True)
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Entry", fmt_num(row.get("entry_limit")))
     c2.metric("Yield", fmt_pct(row.get("annualized_secured_yield")))
     c3.metric("Cushion", fmt_pct(row.get("breakeven_discount_pct")))
     c4.metric("Score", fmt_num(row.get("final_score")))
     c5.metric("Confidence", row.get("confidence"))
+    c6.metric("Warning severity", row.get("warning_severity_label"))
 
     st.markdown(
         f'<div class="idea-watchout"><strong>Technical:</strong> {row.get("technical_label", "Unknown")} | '
@@ -626,8 +617,12 @@ def render_action_idea_row(row, idx):
         unsafe_allow_html=True,
     )
 
+    if row.get("decision_rationale"):
+        st.caption(f"Decision rationale: {row.get('decision_rationale')}")
     if row.get("contract_warning_reasons"):
-        st.caption(f"Warnings: {row.get('contract_warning_reasons')}")
+        st.caption(f"Contract warnings: {row.get('contract_warning_reasons')}")
+    if row.get("stock_warning_reasons"):
+        st.caption(f"Stock warnings: {row.get('stock_warning_reasons')}")
 
 
 # ---------------------------
@@ -866,6 +861,8 @@ if run_scan:
                     rec._cushion_atr_units = tech.get("cushion_atr_units")
                     rec._technical_score = tech_summary.get("technical_score")
                     rec._technical_label = tech_summary.get("technical_label")
+                    rec._stock_warning_reasons = list(getattr(metrics, "stock_warning_reasons", []))
+                    rec._stock_eligibility_status = getattr(metrics, "stock_eligibility_status", "eligible")
 
                 all_recommendations.append(recs[0])
             else:
@@ -907,6 +904,9 @@ if run_scan:
         "symbols_with_contract_warnings": sum(
             1 for v in results_by_symbol.values() if v.get("contract_warning_reasons")
         ),
+        "ready_count": int(ranked_df["decision_status"].eq("Ready").sum()) if not ranked_df.empty else 0,
+        "review_count": int(ranked_df["decision_status"].eq("Review").sum()) if not ranked_df.empty else 0,
+        "pass_count": int(ranked_df["decision_status"].eq("Pass").sum()) if not ranked_df.empty else 0,
     }
 
     st.session_state.previous_ranked_df = st.session_state.ranked_df.copy()
@@ -946,16 +946,18 @@ with tab_dashboard:
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("Universe scanned", scan_summary.get("symbols_in_universe", 0))
     c2.metric("Names with setups", scan_summary.get("symbols_with_recommendations", 0))
-    c3.metric("Names without setups", scan_summary.get("symbols_without_recommendations", 0))
-    c4.metric("Contracts pulled", scan_summary.get("total_contracts_pulled", 0))
-    c5.metric("Provider errors", scan_summary.get("symbols_with_provider_errors", 0))
+    c3.metric("Ready", scan_summary.get("ready_count", 0))
+    c4.metric("Review", scan_summary.get("review_count", 0))
+    c5.metric("Pass", scan_summary.get("pass_count", 0))
     c6.metric("Stock warnings", scan_summary.get("symbols_with_stock_warnings", 0))
     c7.metric("Contract warnings", scan_summary.get("symbols_with_contract_warnings", 0))
 
     if ranked_df.empty:
         st.warning("No recommendations found for this scan.")
     else:
-        dashboard_df = ranked_df.sort_values("final_score", ascending=False).reset_index(drop=True)
+        dashboard_df = ranked_df.sort_values(["decision_status", "final_score"], ascending=[True, False]).copy()
+        dashboard_df["decision_order"] = dashboard_df["decision_status"].map({"Ready": 0, "Review": 1, "Pass": 2}).fillna(9)
+        dashboard_df = dashboard_df.sort_values(["decision_order", "final_score"], ascending=[True, False]).drop(columns=["decision_order"]).reset_index(drop=True)
 
         st.markdown("### Best trade right now")
         best = dashboard_df.iloc[0]
@@ -981,7 +983,7 @@ with tab_dashboard:
         hero9.metric("Break-even cushion", fmt_pct(best["breakeven_discount_pct"]))
         hero10.metric("Annualized yield", fmt_pct(best["annualized_secured_yield"]))
         hero11.metric("Final score", fmt_num(best["final_score"]))
-        hero12.metric("Gap vs #2", fmt_num(next_gap))
+        hero12.metric("Warning severity", best.get("warning_severity_label"))
 
         st.markdown(
             f'<div class="caption-tight"><strong>Technical:</strong> {best.get("technical_label", "Unknown")} | '
@@ -990,9 +992,14 @@ with tab_dashboard:
             unsafe_allow_html=True,
         )
         st.write(f"**Why it stands out:** {best.get('reasons', '—')}")
+        st.write(f"**Decision rationale:** {best.get('decision_rationale', '—')}")
 
+        if best.get("decision_cautions"):
+            st.caption(f"Decision cautions: {best.get('decision_cautions')}")
         if best.get("contract_warning_reasons"):
             st.caption(f"Contract warnings: {best.get('contract_warning_reasons')}")
+        if best.get("stock_warning_reasons"):
+            st.caption(f"Stock warnings: {best.get('stock_warning_reasons')}")
 
         st.markdown("### Top actionable ideas")
         for idx, (_, row) in enumerate(dashboard_df.head(3).iterrows(), start=1):
@@ -1079,7 +1086,7 @@ with tab_ranked:
                 key="ranked_max_dte_filter",
             )
             clean_only = st.checkbox(
-                "Show only setups with no warning flags",
+                "Show only clean Ready-style setups",
                 value=False,
                 key="ranked_clean_only",
             )
@@ -1099,7 +1106,9 @@ with tab_ranked:
         sort_col = st.selectbox(
             "Sort ranked setups by",
             options=[
+                "decision_status",
                 "final_score",
+                "warning_severity_points",
                 "annualized_secured_yield",
                 "breakeven_discount_pct",
                 "pres",
@@ -1114,7 +1123,15 @@ with tab_ranked:
         ascending = st.checkbox("Ascending sort", value=False)
         show_advanced_columns = st.checkbox("Show advanced columns", value=False)
 
-        ranked_sorted = filtered_ranked_df.sort_values(sort_col, ascending=ascending).reset_index(drop=True)
+        ranked_sorted = filtered_ranked_df.copy()
+
+        if sort_col == "decision_status":
+            ranked_sorted["decision_order"] = ranked_sorted["decision_status"].map({"Ready": 0, "Review": 1, "Pass": 2}).fillna(9)
+            ranked_sorted = ranked_sorted.sort_values(["decision_order", "final_score"], ascending=[True, False]).drop(columns=["decision_order"])
+        else:
+            ranked_sorted = ranked_sorted.sort_values(sort_col, ascending=ascending)
+
+        ranked_sorted = ranked_sorted.reset_index(drop=True)
         ranked_sorted.insert(0, "rank", range(1, len(ranked_sorted) + 1))
 
         default_cols = [
@@ -1129,6 +1146,7 @@ with tab_ranked:
             "annualized_secured_yield",
             "technical_label",
             "contract_eligibility_status",
+            "warning_severity_label",
             "decision_status",
             "final_score",
             "confidence",
@@ -1151,8 +1169,16 @@ with tab_ranked:
             "contract_score",
             "pres",
             "warning_flags",
+            "stock_warning_reasons",
             "contract_warning_reasons",
             "contract_hard_fail_reasons",
+            "warning_count_total",
+            "high_severity_warning_count",
+            "medium_severity_warning_count",
+            "low_severity_warning_count",
+            "warning_severity_points",
+            "decision_rationale",
+            "decision_cautions",
             "reasons",
         ]
 
@@ -1162,7 +1188,7 @@ with tab_ranked:
 
         if not ranked_sorted.empty:
             with st.expander("Filtered list summary", expanded=False):
-                s1, s2, s3, s4, s5 = st.columns(5)
+                s1, s2, s3, s4, s5, s6 = st.columns(6)
                 s1.metric("Filtered setups", len(ranked_sorted))
                 s2.metric("Ready", int(ranked_sorted["decision_status"].eq("Ready").sum()))
                 s3.metric("Review", int(ranked_sorted["decision_status"].eq("Review").sum()))
@@ -1171,6 +1197,12 @@ with tab_ranked:
                     "Warned",
                     int(ranked_sorted["contract_eligibility_status"].eq("eligible_with_warnings").sum())
                     if "contract_eligibility_status" in ranked_sorted.columns
+                    else 0,
+                )
+                s6.metric(
+                    "High severity",
+                    int(ranked_sorted["warning_severity_label"].eq("High").sum())
+                    if "warning_severity_label" in ranked_sorted.columns
                     else 0,
                 )
 
@@ -1229,6 +1261,11 @@ with tab_details:
             b3.metric("Defensive review", fmt_num(selected_rec.defensive_review_price))
             b4.metric("Score gap vs next best", fmt_num(separation.get("separation_gap")))
 
+            b5, b6, b7 = st.columns(3)
+            b5.metric("Warning severity", row_for_status.get("warning_severity_label"))
+            b6.metric("Warning points", row_for_status.get("warning_severity_points"))
+            b7.metric("Total warnings/flags", row_for_status.get("warning_count_total"))
+
         with st.expander("Why this works", expanded=True):
             st.markdown("### Why this setup stands out")
             if selected_rec.top_reasons:
@@ -1244,6 +1281,15 @@ with tab_details:
             st.write(f"- Review the trade if the stock approaches **{fmt_num(selected_rec.defensive_review_price)}**.")
             if selected_rec.entry_notes:
                 st.write(f"- Entry note: {selected_rec.entry_notes}")
+
+            st.markdown("### Decisioning summary")
+            st.write(f"- Decision status: **{row_for_status.get('decision_status')}**")
+            st.write(f"- Decision rationale: **{row_for_status.get('decision_rationale', '—')}**")
+
+            if row_for_status.get("decision_cautions"):
+                st.write(f"- Decision cautions: **{row_for_status.get('decision_cautions')}**")
+            if row_for_status.get("decision_blockers"):
+                st.write(f"- Decision blockers: **{row_for_status.get('decision_blockers')}**")
 
             st.markdown("### Trade separation")
             s1, s2 = st.columns(2)
@@ -1261,8 +1307,10 @@ with tab_details:
             st.markdown("### Validation / eligibility details")
             hard_fails = getattr(c, "contract_hard_fail_reasons", [])
             warnings = getattr(c, "contract_warning_reasons", [])
+            stock_warnings = getattr(selected_rec, "_stock_warning_reasons", [])
 
-            st.write(f"- Eligibility status: **{contract_eligibility_status}**")
+            st.write(f"- Contract eligibility status: **{contract_eligibility_status}**")
+            st.write(f"- Stock eligibility status: **{getattr(selected_rec, '_stock_eligibility_status', 'eligible')}**")
 
             if hard_fails:
                 st.write(f"- Hard fail reasons: **{', '.join(hard_fails)}**")
@@ -1270,9 +1318,14 @@ with tab_details:
                 st.write("- Hard fail reasons: none")
 
             if warnings:
-                st.write(f"- Warning reasons: **{', '.join(warnings)}**")
+                st.write(f"- Contract warning reasons: **{', '.join(warnings)}**")
             else:
-                st.write("- Warning reasons: none")
+                st.write("- Contract warning reasons: none")
+
+            if stock_warnings:
+                st.write(f"- Stock warning reasons: **{', '.join(stock_warnings)}**")
+            else:
+                st.write("- Stock warning reasons: none")
 
             if selected_rec.warning_flags:
                 st.write(f"- Merged warning flags: **{', '.join(selected_rec.warning_flags)}**")
@@ -1317,34 +1370,30 @@ with tab_details:
                 contract_rows = []
                 for rec in all_symbol_recs:
                     contract = rec.selected_contract
-                    contract_row = {
-                        "symbol": rec.symbol,
-                        "expiration": contract.expiration_date,
-                        "dte": contract.dte,
-                        "strike": contract.strike,
-                        "delta_abs": contract.delta_abs,
-                        "premium": contract.premium,
-                        "entry_limit": rec.suggested_entry_limit,
-                        "entry_low": rec.acceptable_entry_low,
-                        "entry_high": rec.acceptable_entry_high,
-                        "breakeven": contract.breakeven_price,
-                        "breakeven_discount_pct": contract.breakeven_discount_pct,
-                        "annualized_secured_yield": contract.annualized_secured_yield,
-                        "profit_take_debit": rec.profit_take_debit,
-                        "fast_profit_take_debit": rec.fast_profit_take_debit,
-                        "contract_score": rec.scores.contract_score_total,
-                        "pres": rec.scores.pres_normalized,
-                        "final_score": rec.scores.final_score,
-                        "confidence": rec.confidence_level,
-                        "technical_label": getattr(rec, "_technical_label", None),
-                        "reasons": "; ".join(rec.top_reasons),
-                        "risks": "; ".join(rec.top_risks),
-                        "warning_flags": "; ".join(rec.warning_flags),
-                        "contract_eligibility_status": getattr(contract, "contract_eligibility_status", None),
-                        "contract_hard_fail_reasons": joined(getattr(contract, "contract_hard_fail_reasons", [])),
-                        "contract_warning_reasons": joined(getattr(contract, "contract_warning_reasons", [])),
-                    }
-                    contract_row["decision_status"] = derive_decision_status(contract_row)
+                    contract_row = recommendation_to_row(rec)
+                    contract_row.update(
+                        {
+                            "expiration": contract.expiration_date,
+                            "dte": contract.dte,
+                            "strike": contract.strike,
+                            "premium": contract.premium,
+                            "entry_limit": rec.suggested_entry_limit,
+                            "entry_low": rec.acceptable_entry_low,
+                            "entry_high": rec.acceptable_entry_high,
+                            "breakeven": contract.breakeven_price,
+                            "breakeven_discount_pct": contract.breakeven_discount_pct,
+                            "annualized_secured_yield": contract.annualized_secured_yield,
+                            "profit_take_debit": rec.profit_take_debit,
+                            "fast_profit_take_debit": rec.fast_profit_take_debit,
+                            "contract_score": rec.scores.contract_score_total,
+                            "pres": rec.scores.pres_normalized,
+                            "final_score": rec.scores.final_score,
+                            "confidence": rec.confidence_level,
+                            "technical_label": getattr(rec, "_technical_label", None),
+                            "reasons": "; ".join(rec.top_reasons),
+                            "risks": "; ".join(rec.top_risks),
+                        }
+                    )
                     contract_rows.append(contract_row)
 
                 contract_df = pd.DataFrame(contract_rows)
@@ -1352,7 +1401,9 @@ with tab_details:
                 contract_sort = st.selectbox(
                     "Sort contracts by",
                     options=[
+                        "decision_status",
                         "final_score",
+                        "warning_severity_points",
                         "annualized_secured_yield",
                         "breakeven_discount_pct",
                         "contract_score",
@@ -1363,7 +1414,13 @@ with tab_details:
                     key="contract_sort_select",
                 )
 
-                contract_df = contract_df.sort_values(contract_sort, ascending=False).reset_index(drop=True)
+                if contract_sort == "decision_status":
+                    contract_df["decision_order"] = contract_df["decision_status"].map({"Ready": 0, "Review": 1, "Pass": 2}).fillna(9)
+                    contract_df = contract_df.sort_values(["decision_order", "final_score"], ascending=[True, False]).drop(columns=["decision_order"])
+                else:
+                    contract_df = contract_df.sort_values(contract_sort, ascending=False)
+
+                contract_df = contract_df.reset_index(drop=True)
                 contract_df.insert(0, "rank", range(1, len(contract_df) + 1))
 
                 contract_display_cols = [
@@ -1376,6 +1433,7 @@ with tab_details:
                     "breakeven_discount_pct",
                     "annualized_secured_yield",
                     "contract_eligibility_status",
+                    "warning_severity_label",
                     "decision_status",
                     "final_score",
                     "confidence",
@@ -1441,6 +1499,16 @@ with tab_diagnostics:
             st.write("No contract-level warnings recorded.")
         else:
             st.dataframe(contract_warn_df, use_container_width=True)
+
+    if not ranked_df.empty:
+        st.markdown("### Decision status distribution")
+        decision_dist = (
+            ranked_df.groupby(["decision_status", "warning_severity_label"], dropna=False)
+            .size()
+            .reset_index(name="count")
+            .sort_values(["decision_status", "count"], ascending=[True, False])
+        )
+        st.dataframe(decision_dist, use_container_width=True)
 
     st.markdown("### Provider errors")
 
