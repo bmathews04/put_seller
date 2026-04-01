@@ -560,14 +560,68 @@ with st.sidebar:
 
     preset = MODE_PRESETS.get(preset_mode, MODE_PRESETS["Balanced"])
     
-    max_symbols = st.number_input("Max symbols to scan", min_value=10, max_value=len(TICKERS), value=min(50, len(TICKERS)), step=10)
-    min_dte = st.number_input("Min DTE", min_value=1, max_value=365, value=25)
-    max_dte = st.number_input("Max DTE", min_value=1, max_value=365, value=40)
-    min_delta = st.number_input("Min abs delta", min_value=0.01, max_value=1.00, value=0.12, step=0.01, format="%.2f")
-    max_delta = st.number_input("Max abs delta", min_value=0.01, max_value=1.00, value=0.22, step=0.01, format="%.2f")
-    max_spread_pct = st.number_input("Max spread %", min_value=0.01, max_value=1.00, value=0.12, step=0.01, format="%.2f")
-    min_premium = st.number_input("Min premium", min_value=0.01, max_value=100.0, value=0.35, step=0.05, format="%.2f")
-    exclude_earnings = st.checkbox("Exclude earnings before expiry", value=True)
+    max_symbols = st.number_input(
+        "Max symbols to scan",
+        min_value=10,
+        max_value=len(TICKERS),
+        value=min(50, len(TICKERS)),
+        step=10,
+    )
+
+    min_dte = st.number_input(
+        "Min DTE",
+        min_value=1,
+        max_value=365,
+        value=int(preset["min_dte"]),
+    )
+
+    max_dte = st.number_input(
+        "Max DTE",
+        min_value=1,
+        max_value=365,
+        value=int(preset["max_dte"]),
+    )
+
+    min_delta = st.number_input(
+        "Min abs delta",
+        min_value=0.01,
+        max_value=1.00,
+        value=float(preset["min_abs_delta"]),
+        step=0.01,
+        format="%.2f",
+    )
+
+    max_delta = st.number_input(
+        "Max abs delta",
+        min_value=0.01,
+        max_value=1.00,
+        value=float(preset["max_abs_delta"]),
+        step=0.01,
+        format="%.2f",
+    )
+
+    max_spread_pct = st.number_input(
+        "Max spread %",
+        min_value=0.01,
+        max_value=1.00,
+        value=float(preset["max_spread_pct"]),
+        step=0.01,
+        format="%.2f",
+    )
+
+    min_premium = st.number_input(
+        "Min premium",
+        min_value=0.01,
+        max_value=100.0,
+        value=float(preset["min_premium"]),
+        step=0.05,
+        format="%.2f",
+    )
+
+    exclude_earnings = st.checkbox(
+        "Exclude earnings before expiry",
+        value=bool(preset["exclude_earnings_before_expiry"]),
+    )
     run_scan = st.button("Run Scan", type="primary")
 
     if st.button("Clear cached results"):
@@ -588,13 +642,52 @@ with st.sidebar:
     st.markdown("---")
 
     with st.expander("Advanced scan rules", expanded=False):
-        target_dte = st.number_input("Target DTE", min_value=1, max_value=365, value=32)
-        target_delta = st.number_input("Target abs delta", min_value=0.01, max_value=1.00, value=0.17, step=0.01, format="%.2f")
-        min_oi = st.number_input("Min open interest", min_value=0, max_value=100000, value=500, step=50)
-        min_volume = st.number_input("Min volume", min_value=0, max_value=100000, value=25, step=5)
-        require_quality_data = st.checkbox("Require quality data", value=False)
-        strict_data_mode = st.checkbox("Strict data mode", value=False)
-        strict_earnings_date_handling = st.checkbox("Strict earnings date handling", value=False)
+        target_dte = st.number_input(
+            "Target DTE",
+            min_value=1,
+            max_value=365,
+            value=int(preset["target_dte"]),
+        )
+
+        target_delta = st.number_input(
+            "Target abs delta",
+            min_value=0.01,
+            max_value=1.00,
+            value=float(preset["target_abs_delta"]),
+            step=0.01,
+            format="%.2f",
+        )
+
+        min_oi = st.number_input(
+            "Min open interest",
+            min_value=0,
+            max_value=100000,
+            value=int(preset["min_open_interest"]),
+            step=50,
+        )
+
+        min_volume = st.number_input(
+            "Min volume",
+            min_value=0,
+            max_value=100000,
+            value=int(preset["min_volume"]),
+            step=5,
+        )
+
+        require_quality_data = st.checkbox(
+            "Require quality data",
+            value=bool(preset["require_quality_data"]),
+        )
+
+        strict_data_mode = st.checkbox(
+            "Strict data mode",
+            value=bool(preset["strict_data_mode"]),
+        )
+
+        strict_earnings_date_handling = st.checkbox(
+            "Strict earnings date handling",
+            value=bool(preset["strict_earnings_date_handling"]),
+        )
 
 cfg = ScanConfig(
     max_symbols_to_scan=max_symbols,
@@ -607,6 +700,7 @@ cfg = ScanConfig(
     min_open_interest=int(min_oi),
     min_volume=int(min_volume),
     max_spread_pct=float(max_spread_pct),
+    min_bid=float(preset["min_bid"]),
     min_premium=float(min_premium),
     exclude_earnings_before_expiry=exclude_earnings,
     require_quality_data=require_quality_data,
