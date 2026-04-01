@@ -18,7 +18,7 @@ class ScanConfig:
 
     min_open_interest: int = 500
     min_volume: int = 25
-    max_spread_pct: float = 0.15
+    max_spread_pct: float = 0.12
     min_bid: float = 0.25
     min_premium: float = 0.35
 
@@ -40,17 +40,23 @@ class ScanConfig:
     weight_contract_score: float = 0.45
     weight_pres: float = 0.15
 
-    # missing scoring knobs
+    # Stock scoring controls
     fcf_half_sat: float = 0.06
-    oi_half_sat: float = 1000.0
-    volume_half_sat: float = 100.0
-    breakeven_half_sat: float = 0.10
-
     safe_event_score: float = 100.0
     unknown_event_score: float = 60.0
     unsafe_event_score: float = 0.0
-
     weight_quality: float = 0.35
     weight_event_stability: float = 0.25
     weight_options_market_quality: float = 0.20
     weight_assignment_comfort: float = 0.20
+
+    # Contract scoring controls
+    breakeven_half_sat: float = 0.08
+    annualized_yield_half_sat: float = 0.12
+    oi_half_sat: float = 1000.0
+    volume_half_sat: float = 100.0
+    weight_breakeven: float = 0.25
+    weight_secured_yield: float = 0.25
+    weight_delta_fit: float = 0.20
+    weight_liquidity: float = 0.20
+    weight_dte_fit: float = 0.10
