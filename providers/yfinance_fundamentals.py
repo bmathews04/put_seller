@@ -1,8 +1,20 @@
 from datetime import date, datetime
+
 import pandas as pd
-import yfinance as yf
 
 from models import StockMetrics
+
+try:  # pragma: no cover - exercised indirectly in integration runs
+    import yfinance as yf
+except ModuleNotFoundError:  # pragma: no cover - allows unit tests without yfinance installed
+    from types import SimpleNamespace
+
+    yf = SimpleNamespace(Ticker=None)
+
+
+def _require_yfinance() -> None:
+    if getattr(yf, "Ticker", None) is None:
+        raise ModuleNotFoundError("yfinance is required for live fundamentals fetches")
 
 
 def _safe_date(value):
@@ -23,6 +35,7 @@ def _safe_date(value):
 
 class YFinanceFundamentalsProvider:
     def get_stock_metrics(self, symbol: str) -> StockMetrics:
+        _require_yfinance()
         ticker = yf.Ticker(symbol)
         info = ticker.info or {}
 
