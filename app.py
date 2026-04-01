@@ -711,6 +711,8 @@ cfg = ScanConfig(
 st.sidebar.write("strict_earnings_date_handling =", cfg.strict_earnings_date_handling)
 st.sidebar.write("require_quality_data =", cfg.require_quality_data)
 st.sidebar.write("strict_data_mode =", cfg.strict_data_mode)
+st.write("scan_summary:", scan_summary)
+st.write("sample results_by_symbol:", list(results_by_symbol.items())[:3])
 
 with st.sidebar.expander("Debug config check", expanded=False):
     st.write({
