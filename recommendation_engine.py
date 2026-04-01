@@ -55,7 +55,6 @@ def build_management_plan(stock_price: float, contract: OptionContract, cfg: Sca
 
     roll_candidate_flag = True
 
-    # Make allow_expiry_week_hold a real management setting
     if cfg.allow_expiry_week_hold:
         review_at_dte = cfg.review_dte
         hold_guidance = "Holding into expiration week can be acceptable if price action, liquidity, and assignment comfort remain favorable."
@@ -92,8 +91,6 @@ def assign_confidence(
     if not metrics.quality_data_complete:
         concerns += 1
 
-    # Only treat earnings uncertainty as a confidence concern
-    # when earnings exclusion is NOT already enforced as a hard rule.
     if not cfg.exclude_earnings_before_expiry:
         if metrics.earnings_date is None or metrics.days_to_earnings is None:
             concerns += 2
@@ -146,19 +143,15 @@ def build_reasons_and_risks(
 
     if not metrics.quality_data_complete:
         negatives.append((80, "Quality score used fallback data"))
-        flags.append("quality_data_incomplete")
 
     if not cfg.exclude_earnings_before_expiry:
         if metrics.earnings_date is None or metrics.days_to_earnings is None:
             negatives.append((75, "Earnings date is unknown"))
-            flags.append("earnings_unknown")
         elif metrics.days_to_earnings <= contract.dte:
             negatives.append((85, "Earnings may occur before expiry"))
-            flags.append("earnings_before_expiry")
 
     if contract.spread_pct is not None and contract.spread_pct > 0.10:
         negatives.append((70, "Spread is on the wider side"))
-        flags.append("spread_moderately_wide")
 
     if contract.delta_abs is not None and contract.delta_abs > 0.20:
         negatives.append((60, "Delta is near the high end of the target band"))
@@ -172,10 +165,21 @@ def build_reasons_and_risks(
         negatives.append((50, "Premium is relatively thin for the capital required"))
         flags.append("thin_yield")
 
+    merged_warning_flags = []
+    for reason in getattr(metrics, "stock_warning_reasons", []):
+        if reason not in merged_warning_flags:
+            merged_warning_flags.append(reason)
+    for reason in getattr(contract, "contract_warning_reasons", []):
+        if reason not in merged_warning_flags:
+            merged_warning_flags.append(reason)
+    for reason in flags:
+        if reason not in merged_warning_flags:
+            merged_warning_flags.append(reason)
+
     top_reasons = [text for _, text in sorted(positives, key=lambda x: x[0], reverse=True)[:3]]
     top_risks = [text for _, text in sorted(negatives, key=lambda x: x[0], reverse=True)[:2]]
 
-    return top_reasons, top_risks, flags
+    return top_reasons, top_risks, merged_warning_flags
 
 
 def combine_scorecards(stock_scores: ScoreCard, contract_scores: ScoreCard, pres_normalized: float, cfg: ScanConfig) -> ScoreCard:
@@ -218,7 +222,10 @@ def build_recommendations_for_stock(metrics: StockMetrics, raw_contracts: list[O
 
     if not valid_contracts:
         metrics.stock_valid = False
-        metrics.stock_exclusion_reasons.append("no_valid_contracts")
+        metrics.stock_eligibility_status = "ineligible"
+        if "no_valid_contracts" not in metrics.stock_hard_fail_reasons:
+            metrics.stock_hard_fail_reasons.append("no_valid_contracts")
+        metrics.stock_exclusion_reasons = list(metrics.stock_hard_fail_reasons)
         return []
 
     metrics.candidate_contract_count = len(valid_contracts)
