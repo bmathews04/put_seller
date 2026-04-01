@@ -478,12 +478,88 @@ def render_action_idea_row(row, idx):
     if row.get("decision_rationale"):
         st.caption(f"Decision rationale: {row.get('decision_rationale')}")
 
+MODE_PRESETS = {
+    "Loose": {
+        "min_dte": 21,
+        "max_dte": 45,
+        "target_dte": 30,
+        "min_abs_delta": 0.10,
+        "max_abs_delta": 0.30,
+        "target_abs_delta": 0.18,
+        "max_spread_pct": 0.18,
+        "min_bid": 0.20,
+        "min_premium": 0.25,
+        "min_open_interest": 100,
+        "min_volume": 5,
+        "exclude_earnings_before_expiry": False,
+        "strict_earnings_date_handling": False,
+        "require_quality_data": False,
+        "strict_data_mode": False,
+        "otm_only": True,
+        "allow_expiry_week_hold": True,
+        "review_dte": 3,
+        "profit_take_pct": 0.50,
+        "fast_profit_take_pct": 0.35,
+    },
+    "Balanced": {
+        "min_dte": 25,
+        "max_dte": 40,
+        "target_dte": 32,
+        "min_abs_delta": 0.12,
+        "max_abs_delta": 0.25,
+        "target_abs_delta": 0.17,
+        "max_spread_pct": 0.15,
+        "min_bid": 0.25,
+        "min_premium": 0.35,
+        "min_open_interest": 250,
+        "min_volume": 10,
+        "exclude_earnings_before_expiry": True,
+        "strict_earnings_date_handling": False,
+        "require_quality_data": False,
+        "strict_data_mode": False,
+        "otm_only": True,
+        "allow_expiry_week_hold": False,
+        "review_dte": 3,
+        "profit_take_pct": 0.50,
+        "fast_profit_take_pct": 0.35,
+    },
+    "Conservative": {
+        "min_dte": 25,
+        "max_dte": 35,
+        "target_dte": 30,
+        "min_abs_delta": 0.12,
+        "max_abs_delta": 0.20,
+        "target_abs_delta": 0.15,
+        "max_spread_pct": 0.12,
+        "min_bid": 0.30,
+        "min_premium": 0.40,
+        "min_open_interest": 500,
+        "min_volume": 25,
+        "exclude_earnings_before_expiry": True,
+        "strict_earnings_date_handling": True,
+        "require_quality_data": True,
+        "strict_data_mode": True,
+        "otm_only": True,
+        "allow_expiry_week_hold": False,
+        "review_dte": 5,
+        "profit_take_pct": 0.50,
+        "fast_profit_take_pct": 0.30,
+    },
+}
 
 st.title("Passive Put Scanner")
 
 with st.sidebar:
     st.header("Scan Settings")
 
+    preset_mode = st.selectbox(
+        "Preset mode",
+        options=["Balanced", "Loose", "Conservative", "Custom"],
+        index=0,
+    )
+
+    preset = MODE_PRESETS.get(preset_mode, MODE_PRESETS["Balanced"])
+    
     max_symbols = st.number_input("Max symbols to scan", min_value=10, max_value=len(TICKERS), value=min(50, len(TICKERS)), step=10)
     min_dte = st.number_input("Min DTE", min_value=1, max_value=365, value=25)
     max_dte = st.number_input("Max DTE", min_value=1, max_value=365, value=40)
