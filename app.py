@@ -13,7 +13,7 @@ from technicals import (
     score_technical_context,
     grade_trade_separation,
 )
-from decisioning import derive_decision_status, confidence_rank, technical_rank
+from decisioning import confidence_rank, technical_rank, derive_decision_status
 
 st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
@@ -135,49 +135,32 @@ div[data-testid="stDataFrame"] {
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------
-# Session state initialization
-# ---------------------------
 if "scan_completed" not in st.session_state:
     st.session_state.scan_completed = False
-
 if "all_recommendations" not in st.session_state:
     st.session_state.all_recommendations = []
-
 if "results_by_symbol" not in st.session_state:
     st.session_state.results_by_symbol = {}
-
 if "ranked_df" not in st.session_state:
     st.session_state.ranked_df = pd.DataFrame()
-
 if "previous_ranked_df" not in st.session_state:
     st.session_state.previous_ranked_df = pd.DataFrame()
-
 if "stock_excl_df" not in st.session_state:
     st.session_state.stock_excl_df = pd.DataFrame()
-
 if "contract_excl_df" not in st.session_state:
     st.session_state.contract_excl_df = pd.DataFrame()
-
 if "stock_warn_df" not in st.session_state:
     st.session_state.stock_warn_df = pd.DataFrame()
-
 if "contract_warn_df" not in st.session_state:
     st.session_state.contract_warn_df = pd.DataFrame()
-
 if "scan_summary" not in st.session_state:
     st.session_state.scan_summary = {}
-
 if "last_scan_cfg" not in st.session_state:
     st.session_state.last_scan_cfg = None
-
 if "selected_detail_symbol" not in st.session_state:
     st.session_state.selected_detail_symbol = None
 
 
-# ---------------------------
-# Helpers
-# ---------------------------
 def fmt_pct(value):
     if value is None or pd.isna(value):
         return "—"
@@ -229,24 +212,7 @@ def joined(items):
 def recommendation_to_row(rec):
     c = rec.selected_contract
 
-    stock_warning_reasons = getattr(rec, "_stock_warning_reasons", [])
-    stock_eligibility_status = getattr(rec, "_stock_eligibility_status", "eligible")
-    contract_warning_reasons = getattr(c, "contract_warning_reasons", [])
-    contract_eligibility_status = getattr(c, "contract_eligibility_status", None)
-    merged_warning_flags = rec.warning_flags or []
-
-    decision_status, decision_meta = derive_decision_status(
-        final_score=rec.scores.final_score,
-        confidence=rec.confidence_level,
-        technical_label=getattr(rec, "_technical_label", None),
-        contract_eligibility_status=contract_eligibility_status,
-        stock_eligibility_status=stock_eligibility_status,
-        stock_warning_reasons=stock_warning_reasons,
-        contract_warning_reasons=contract_warning_reasons,
-        warning_flags=merged_warning_flags,
-    )
-
-    row = {
+    return {
         "symbol": rec.symbol,
         "stock_price": rec.stock_price,
         "expiration": c.expiration_date,
@@ -271,30 +237,28 @@ def recommendation_to_row(rec):
         "confidence": rec.confidence_level,
         "reasons": "; ".join(rec.top_reasons),
         "risks": "; ".join(rec.top_risks),
-        "warning_flags": "; ".join(merged_warning_flags),
+        "warning_flags": "; ".join(rec.warning_flags),
         "trend_state": getattr(rec, "_trend_state", None),
         "distance_to_support_pct": getattr(rec, "_distance_to_support_pct", None),
         "cushion_atr_units": getattr(rec, "_cushion_atr_units", None),
         "technical_score": getattr(rec, "_technical_score", None),
         "technical_label": getattr(rec, "_technical_label", None),
-        "stock_eligibility_status": stock_eligibility_status,
-        "stock_warning_reasons": joined(stock_warning_reasons),
-        "contract_eligibility_status": contract_eligibility_status,
+        "stock_eligibility_status": rec.stock_eligibility_status,
+        "stock_warning_reasons": joined(rec.stock_warning_reasons),
+        "contract_eligibility_status": rec.contract_eligibility_status,
         "contract_hard_fail_reasons": joined(getattr(c, "contract_hard_fail_reasons", [])),
-        "contract_warning_reasons": joined(contract_warning_reasons),
-        "decision_status": decision_status,
-        "decision_rationale": decision_meta.get("decision_rationale"),
-        "decision_blockers": joined(decision_meta.get("decision_blockers", [])),
-        "decision_cautions": joined(decision_meta.get("decision_cautions", [])),
-        "warning_severity_label": decision_meta.get("severity_label"),
-        "warning_severity_points": decision_meta.get("severity_points"),
-        "warning_count_total": decision_meta.get("warning_count_total"),
-        "high_severity_warning_count": decision_meta.get("high_severity_count"),
-        "medium_severity_warning_count": decision_meta.get("medium_severity_count"),
-        "low_severity_warning_count": decision_meta.get("low_severity_count"),
+        "contract_warning_reasons": joined(rec.contract_warning_reasons),
+        "decision_status": rec.decision_status,
+        "decision_rationale": rec.decision_rationale,
+        "decision_blockers": joined(rec.decision_blockers),
+        "decision_cautions": joined(rec.decision_cautions),
+        "warning_severity_label": rec.warning_severity_label,
+        "warning_severity_points": rec.warning_severity_points,
+        "warning_count_total": rec.warning_count_total,
+        "high_severity_warning_count": rec.high_severity_warning_count,
+        "medium_severity_warning_count": rec.medium_severity_warning_count,
+        "low_severity_warning_count": rec.low_severity_warning_count,
     }
-
-    return row
 
 
 def summarize_reason_lists(rows, key_name="reason"):
@@ -427,24 +391,16 @@ def validate_recommendation_like(obj):
     else:
         findings.append(("Required fields", "All required recommendation fields present"))
 
-    if "selected_contract" in obj:
-        if isinstance(obj["selected_contract"], dict):
-            findings.append(("selected_contract", "Looks like nested dict payload"))
-        else:
-            findings.append(("selected_contract", f"Present, type={type(obj['selected_contract']).__name__}"))
-
-    if "scores" in obj:
-        if isinstance(obj["scores"], dict):
-            findings.append(("scores", "Looks like nested dict payload"))
-        else:
-            findings.append(("scores", f"Present, type={type(obj['scores']).__name__}"))
-
     for key in [
         "suggested_entry_limit",
         "acceptable_entry_low",
         "acceptable_entry_high",
         "profit_take_debit",
         "confidence_level",
+        "decision_status",
+        "decision_rationale",
+        "warning_severity_label",
+        "warning_severity_points",
     ]:
         if key in obj:
             findings.append((key, f"Present: {obj[key]}"))
@@ -551,6 +507,7 @@ def filter_ranked_df(
             (filtered["warning_count_total"].fillna(0) == 0)
             & (filtered["contract_eligibility_status"] == "eligible")
             & (filtered["stock_eligibility_status"] == "eligible")
+            & (filtered["decision_status"] == "Ready")
         ]
 
     return filtered
@@ -625,9 +582,6 @@ def render_action_idea_row(row, idx):
         st.caption(f"Stock warnings: {row.get('stock_warning_reasons')}")
 
 
-# ---------------------------
-# Sidebar / settings
-# ---------------------------
 st.title("Passive Put Scanner")
 
 with st.sidebar:
@@ -710,20 +664,8 @@ with st.sidebar:
             step=0.01,
             format="%.2f",
         )
-        min_oi = st.number_input(
-            "Min open interest",
-            min_value=0,
-            max_value=100000,
-            value=500,
-            step=50,
-        )
-        min_volume = st.number_input(
-            "Min volume",
-            min_value=0,
-            max_value=100000,
-            value=25,
-            step=5,
-        )
+        min_oi = st.number_input("Min open interest", min_value=0, max_value=100000, value=500, step=50)
+        min_volume = st.number_input("Min volume", min_value=0, max_value=100000, value=25, step=5)
         require_quality_data = st.checkbox("Require quality data", value=False)
         strict_data_mode = st.checkbox("Strict data mode", value=False)
 
@@ -744,9 +686,6 @@ cfg = ScanConfig(
     strict_data_mode=strict_data_mode,
 )
 
-# ---------------------------
-# Tabs
-# ---------------------------
 tab_dashboard, tab_ranked, tab_details, tab_diagnostics, tab_debug = st.tabs(
     ["Dashboard", "Ranked Setups", "Contract Details", "Diagnostics", "Debug / Validation"]
 )
@@ -772,9 +711,6 @@ metadata_by_symbol = {
     for symbol in symbols
 }
 
-# ---------------------------
-# Data fetch / scan
-# ---------------------------
 if run_scan:
     all_recommendations = []
     results_by_symbol = {}
@@ -804,10 +740,7 @@ if run_scan:
         try:
             metrics = market_provider.get_stock_metrics(symbol)
             contracts = market_provider.get_option_contracts(symbol, cfg, stock_metrics=metrics)
-            results_by_symbol[symbol]["provider_detail_errors"] = list(
-                getattr(market_provider, "last_errors", [])
-            )
-
+            results_by_symbol[symbol]["provider_detail_errors"] = list(getattr(market_provider, "last_errors", []))
             results_by_symbol[symbol]["contract_count"] = len(contracts)
 
             if not contracts:
@@ -827,7 +760,6 @@ if run_scan:
             for c in contracts:
                 hard_reasons = list(getattr(c, "contract_hard_fail_reasons", []))
                 warning_reasons = list(getattr(c, "contract_warning_reasons", []))
-
                 if hard_reasons:
                     contract_hard_fail_lists.append(hard_reasons)
                 if warning_reasons:
@@ -861,8 +793,27 @@ if run_scan:
                     rec._cushion_atr_units = tech.get("cushion_atr_units")
                     rec._technical_score = tech_summary.get("technical_score")
                     rec._technical_label = tech_summary.get("technical_label")
-                    rec._stock_warning_reasons = list(getattr(metrics, "stock_warning_reasons", []))
-                    rec._stock_eligibility_status = getattr(metrics, "stock_eligibility_status", "eligible")
+
+                    decision_status, decision_meta = derive_decision_status(
+                        final_score=rec.scores.final_score,
+                        confidence=rec.confidence_level,
+                        technical_label=rec._technical_label,
+                        contract_eligibility_status=rec.contract_eligibility_status,
+                        stock_eligibility_status=rec.stock_eligibility_status,
+                        stock_warning_reasons=rec.stock_warning_reasons,
+                        contract_warning_reasons=rec.contract_warning_reasons,
+                        warning_flags=rec.warning_flags,
+                    )
+                    rec.decision_status = decision_status
+                    rec.decision_rationale = decision_meta.get("decision_rationale")
+                    rec.decision_blockers = list(decision_meta.get("decision_blockers", []))
+                    rec.decision_cautions = list(decision_meta.get("decision_cautions", []))
+                    rec.warning_severity_label = decision_meta.get("severity_label", "None")
+                    rec.warning_severity_points = int(decision_meta.get("severity_points", 0))
+                    rec.warning_count_total = int(decision_meta.get("warning_count_total", 0))
+                    rec.high_severity_warning_count = int(decision_meta.get("high_severity_count", 0))
+                    rec.medium_severity_warning_count = int(decision_meta.get("medium_severity_count", 0))
+                    rec.low_severity_warning_count = int(decision_meta.get("low_severity_count", 0))
 
                 all_recommendations.append(recs[0])
             else:
@@ -876,7 +827,12 @@ if run_scan:
     progress.empty()
     status.empty()
 
-    all_recommendations.sort(key=lambda r: r.scores.final_score, reverse=True)
+    all_recommendations.sort(
+        key=lambda r: (
+            {"Ready": 0, "Review": 1, "Pass": 2}.get(r.decision_status, 9),
+            -(r.scores.final_score or 0),
+        )
+    )
 
     ranked_rows = []
     for rec in all_recommendations:
@@ -894,16 +850,10 @@ if run_scan:
         "symbols_without_recommendations": max(len(symbols) - len(all_recommendations), 0),
         "total_contracts_pulled": sum(v["contract_count"] for v in results_by_symbol.values()),
         "symbols_with_provider_errors": sum(
-            1
-            for v in results_by_symbol.values()
-            if v.get("exception") or v.get("provider_detail_errors")
+            1 for v in results_by_symbol.values() if v.get("exception") or v.get("provider_detail_errors")
         ),
-        "symbols_with_stock_warnings": sum(
-            1 for v in results_by_symbol.values() if v.get("stock_warning_reasons")
-        ),
-        "symbols_with_contract_warnings": sum(
-            1 for v in results_by_symbol.values() if v.get("contract_warning_reasons")
-        ),
+        "symbols_with_stock_warnings": sum(1 for v in results_by_symbol.values() if v.get("stock_warning_reasons")),
+        "symbols_with_contract_warnings": sum(1 for v in results_by_symbol.values() if v.get("contract_warning_reasons")),
         "ready_count": int(ranked_df["decision_status"].eq("Ready").sum()) if not ranked_df.empty else 0,
         "review_count": int(ranked_df["decision_status"].eq("Review").sum()) if not ranked_df.empty else 0,
         "pass_count": int(ranked_df["decision_status"].eq("Pass").sum()) if not ranked_df.empty else 0,
@@ -922,7 +872,7 @@ if run_scan:
     st.session_state.last_scan_cfg = cfg
 
     if not ranked_df.empty:
-        st.session_state.selected_detail_symbol = ranked_df.sort_values("final_score", ascending=False).iloc[0]["symbol"]
+        st.session_state.selected_detail_symbol = ranked_df.iloc[0]["symbol"]
 
 else:
     all_recommendations = st.session_state.all_recommendations
@@ -937,9 +887,6 @@ else:
 previous_ranked_df = st.session_state.previous_ranked_df
 new_symbols, dropped_symbols, movers_df = build_scan_changes(ranked_df, previous_ranked_df)
 
-# ---------------------------
-# Dashboard
-# ---------------------------
 with tab_dashboard:
     st.subheader("Decision Board")
 
@@ -955,7 +902,7 @@ with tab_dashboard:
     if ranked_df.empty:
         st.warning("No recommendations found for this scan.")
     else:
-        dashboard_df = ranked_df.sort_values(["decision_status", "final_score"], ascending=[True, False]).copy()
+        dashboard_df = ranked_df.copy()
         dashboard_df["decision_order"] = dashboard_df["decision_status"].map({"Ready": 0, "Review": 1, "Pass": 2}).fillna(9)
         dashboard_df = dashboard_df.sort_values(["decision_order", "final_score"], ascending=[True, False]).drop(columns=["decision_order"]).reset_index(drop=True)
 
@@ -1010,28 +957,16 @@ with tab_dashboard:
 
         with change_col1:
             st.markdown("**New symbols**")
-            if new_symbols:
-                st.write(", ".join(new_symbols))
-            else:
-                st.write("No new symbols.")
-
+            st.write(", ".join(new_symbols) if new_symbols else "No new symbols.")
             st.markdown("**Dropped symbols**")
-            if dropped_symbols:
-                st.write(", ".join(dropped_symbols))
-            else:
-                st.write("No dropped symbols.")
+            st.write(", ".join(dropped_symbols) if dropped_symbols else "No dropped symbols.")
 
         with change_col2:
             st.markdown("**Biggest score movers**")
-            if movers_df.empty:
-                st.write("No overlapping symbols to compare.")
-            else:
+            st.write("No overlapping symbols to compare." if movers_df.empty else "")
+            if not movers_df.empty:
                 st.dataframe(movers_df.head(5), use_container_width=True)
 
-
-# ---------------------------
-# Ranked setups
-# ---------------------------
 with tab_ranked:
     st.subheader("Ranked Setups")
 
@@ -1045,51 +980,16 @@ with tab_ranked:
         rank_filter_col1, rank_filter_col2, rank_filter_col3 = st.columns(3)
 
         with rank_filter_col1:
-            min_confidence = st.selectbox(
-                "Minimum confidence",
-                ["Any", "Medium", "High"],
-                index=0,
-                key="ranked_min_confidence",
-            )
-            technical_filter = st.selectbox(
-                "Minimum technical label",
-                ["Any", "Cautious", "Mixed", "Supportive", "Strongly supportive"],
-                index=0,
-                key="ranked_technical_filter",
-            )
+            min_confidence = st.selectbox("Minimum confidence", ["Any", "Medium", "High"], index=0, key="ranked_min_confidence")
+            technical_filter = st.selectbox("Minimum technical label", ["Any", "Cautious", "Mixed", "Supportive", "Strongly supportive"], index=0, key="ranked_technical_filter")
 
         with rank_filter_col2:
-            min_yield = st.slider(
-                "Minimum annualized yield",
-                min_value=0.00,
-                max_value=0.50,
-                value=0.00,
-                step=0.01,
-                key="ranked_min_yield",
-            )
-            min_cushion = st.slider(
-                "Minimum break-even cushion",
-                min_value=0.00,
-                max_value=0.30,
-                value=0.00,
-                step=0.01,
-                key="ranked_min_cushion",
-            )
+            min_yield = st.slider("Minimum annualized yield", min_value=0.00, max_value=0.50, value=0.00, step=0.01, key="ranked_min_yield")
+            min_cushion = st.slider("Minimum break-even cushion", min_value=0.00, max_value=0.30, value=0.00, step=0.01, key="ranked_min_cushion")
 
         with rank_filter_col3:
-            max_dte_filter = st.slider(
-                "Maximum DTE",
-                min_value=1,
-                max_value=max(365, default_max_dte),
-                value=default_max_dte,
-                step=1,
-                key="ranked_max_dte_filter",
-            )
-            clean_only = st.checkbox(
-                "Show only clean Ready-style setups",
-                value=False,
-                key="ranked_clean_only",
-            )
+            max_dte_filter = st.slider("Maximum DTE", min_value=1, max_value=max(365, default_max_dte), value=default_max_dte, step=1, key="ranked_max_dte_filter")
+            clean_only = st.checkbox("Show only clean Ready-style setups", value=False, key="ranked_clean_only")
 
         filtered_ranked_df = filter_ranked_df(
             ranked_df,
@@ -1124,7 +1024,6 @@ with tab_ranked:
         show_advanced_columns = st.checkbox("Show advanced columns", value=False)
 
         ranked_sorted = filtered_ranked_df.copy()
-
         if sort_col == "decision_status":
             ranked_sorted["decision_order"] = ranked_sorted["decision_status"].map({"Ready": 0, "Review": 1, "Pass": 2}).fillna(9)
             ranked_sorted = ranked_sorted.sort_values(["decision_order", "final_score"], ascending=[True, False]).drop(columns=["decision_order"])
@@ -1135,81 +1034,25 @@ with tab_ranked:
         ranked_sorted.insert(0, "rank", range(1, len(ranked_sorted) + 1))
 
         default_cols = [
-            "rank",
-            "symbol",
-            "expiration",
-            "dte",
-            "strike",
-            "premium",
-            "entry_limit",
-            "breakeven_discount_pct",
-            "annualized_secured_yield",
-            "technical_label",
-            "contract_eligibility_status",
-            "warning_severity_label",
-            "decision_status",
-            "final_score",
-            "confidence",
-            "risks",
+            "rank", "symbol", "expiration", "dte", "strike", "premium", "entry_limit",
+            "breakeven_discount_pct", "annualized_secured_yield", "technical_label",
+            "contract_eligibility_status", "warning_severity_label", "decision_status",
+            "final_score", "confidence", "risks",
         ]
-
         advanced_cols = [
-            "company_name",
-            "sector",
-            "stock_price",
-            "delta_abs",
-            "breakeven",
-            "entry_low",
-            "entry_high",
-            "trend_state",
-            "distance_to_support_pct",
-            "cushion_atr_units",
-            "technical_score",
-            "stock_score",
-            "contract_score",
-            "pres",
-            "warning_flags",
-            "stock_warning_reasons",
-            "contract_warning_reasons",
-            "contract_hard_fail_reasons",
-            "warning_count_total",
-            "high_severity_warning_count",
-            "medium_severity_warning_count",
-            "low_severity_warning_count",
-            "warning_severity_points",
-            "decision_rationale",
-            "decision_cautions",
-            "reasons",
+            "company_name", "sector", "stock_price", "delta_abs", "breakeven", "entry_low",
+            "entry_high", "trend_state", "distance_to_support_pct", "cushion_atr_units",
+            "technical_score", "stock_score", "contract_score", "pres", "warning_flags",
+            "stock_warning_reasons", "contract_warning_reasons", "contract_hard_fail_reasons",
+            "warning_count_total", "high_severity_warning_count", "medium_severity_warning_count",
+            "low_severity_warning_count", "warning_severity_points", "decision_rationale",
+            "decision_cautions", "reasons",
         ]
 
         display_cols = default_cols + (advanced_cols if show_advanced_columns else [])
         available_cols = [col for col in display_cols if col in ranked_sorted.columns]
         st.dataframe(ranked_sorted[available_cols], use_container_width=True)
 
-        if not ranked_sorted.empty:
-            with st.expander("Filtered list summary", expanded=False):
-                s1, s2, s3, s4, s5, s6 = st.columns(6)
-                s1.metric("Filtered setups", len(ranked_sorted))
-                s2.metric("Ready", int(ranked_sorted["decision_status"].eq("Ready").sum()))
-                s3.metric("Review", int(ranked_sorted["decision_status"].eq("Review").sum()))
-                s4.metric("Pass", int(ranked_sorted["decision_status"].eq("Pass").sum()))
-                s5.metric(
-                    "Warned",
-                    int(ranked_sorted["contract_eligibility_status"].eq("eligible_with_warnings").sum())
-                    if "contract_eligibility_status" in ranked_sorted.columns
-                    else 0,
-                )
-                s6.metric(
-                    "High severity",
-                    int(ranked_sorted["warning_severity_label"].eq("High").sum())
-                    if "warning_severity_label" in ranked_sorted.columns
-                    else 0,
-                )
-
-
-# ---------------------------
-# Contract details
-# ---------------------------
 with tab_details:
     st.subheader("Contract Details")
 
@@ -1217,7 +1060,6 @@ with tab_details:
         st.warning("No contract details available.")
     else:
         default_symbol = st.session_state.selected_detail_symbol or all_recommendations[0].symbol
-
         symbol_options = [rec.symbol for rec in all_recommendations]
         default_index = symbol_options.index(default_symbol) if default_symbol in symbol_options else 0
         selected_symbol = st.selectbox("Select symbol", symbol_options, index=default_index)
@@ -1235,17 +1077,13 @@ with tab_details:
             selected_rec.scores.final_score,
         )
 
-        row_for_status = recommendation_to_row(selected_rec)
-        decision_status = row_for_status.get("decision_status", "Review")
-        contract_eligibility_status = getattr(c, "contract_eligibility_status", "eligible")
-
         with st.expander("Trade summary", expanded=True):
             summary_lines = describe_trade_setup(selected_rec)
             for line in summary_lines:
                 st.write(line)
 
             a1, a2, a3, a4, a5, a6 = st.columns(6)
-            a1.markdown(decision_badge_html(decision_status), unsafe_allow_html=True)
+            a1.markdown(decision_badge_html(selected_rec.decision_status), unsafe_allow_html=True)
             a1.caption("Decision status")
             a2.metric("Contract", f"{selected_rec.symbol} {fmt_num(c.strike)}P")
             a3.metric("Suggested entry", fmt_num(selected_rec.suggested_entry_limit))
@@ -1253,7 +1091,7 @@ with tab_details:
             a5.metric("Break-even", fmt_num(c.breakeven_price))
             a6.metric("Confidence", selected_rec.confidence_level)
 
-            st.markdown(eligibility_badge_html(contract_eligibility_status), unsafe_allow_html=True)
+            st.markdown(eligibility_badge_html(selected_rec.contract_eligibility_status), unsafe_allow_html=True)
 
             b1, b2, b3, b4 = st.columns(4)
             b1.metric("Annualized yield", fmt_pct(c.annualized_secured_yield))
@@ -1262,9 +1100,9 @@ with tab_details:
             b4.metric("Score gap vs next best", fmt_num(separation.get("separation_gap")))
 
             b5, b6, b7 = st.columns(3)
-            b5.metric("Warning severity", row_for_status.get("warning_severity_label"))
-            b6.metric("Warning points", row_for_status.get("warning_severity_points"))
-            b7.metric("Total warnings/flags", row_for_status.get("warning_count_total"))
+            b5.metric("Warning severity", selected_rec.warning_severity_label)
+            b6.metric("Warning points", selected_rec.warning_severity_points)
+            b7.metric("Total warnings/flags", selected_rec.warning_count_total)
 
         with st.expander("Why this works", expanded=True):
             st.markdown("### Why this setup stands out")
@@ -1283,13 +1121,15 @@ with tab_details:
                 st.write(f"- Entry note: {selected_rec.entry_notes}")
 
             st.markdown("### Decisioning summary")
-            st.write(f"- Decision status: **{row_for_status.get('decision_status')}**")
-            st.write(f"- Decision rationale: **{row_for_status.get('decision_rationale', '—')}**")
+            st.write(f"- Decision status: **{selected_rec.decision_status}**")
+            st.write(f"- Decision rationale: **{selected_rec.decision_rationale or '—'}**")
+            st.write(f"- Warning severity: **{selected_rec.warning_severity_label}**")
+            st.write(f"- Warning points: **{selected_rec.warning_severity_points}**")
 
-            if row_for_status.get("decision_cautions"):
-                st.write(f"- Decision cautions: **{row_for_status.get('decision_cautions')}**")
-            if row_for_status.get("decision_blockers"):
-                st.write(f"- Decision blockers: **{row_for_status.get('decision_blockers')}**")
+            if selected_rec.decision_cautions:
+                st.write(f"- Decision cautions: **{', '.join(selected_rec.decision_cautions)}**")
+            if selected_rec.decision_blockers:
+                st.write(f"- Decision blockers: **{', '.join(selected_rec.decision_blockers)}**")
 
             st.markdown("### Trade separation")
             s1, s2 = st.columns(2)
@@ -1306,24 +1146,22 @@ with tab_details:
 
             st.markdown("### Validation / eligibility details")
             hard_fails = getattr(c, "contract_hard_fail_reasons", [])
-            warnings = getattr(c, "contract_warning_reasons", [])
-            stock_warnings = getattr(selected_rec, "_stock_warning_reasons", [])
 
-            st.write(f"- Contract eligibility status: **{contract_eligibility_status}**")
-            st.write(f"- Stock eligibility status: **{getattr(selected_rec, '_stock_eligibility_status', 'eligible')}**")
+            st.write(f"- Contract eligibility status: **{selected_rec.contract_eligibility_status}**")
+            st.write(f"- Stock eligibility status: **{selected_rec.stock_eligibility_status}**")
 
             if hard_fails:
                 st.write(f"- Hard fail reasons: **{', '.join(hard_fails)}**")
             else:
                 st.write("- Hard fail reasons: none")
 
-            if warnings:
-                st.write(f"- Contract warning reasons: **{', '.join(warnings)}**")
+            if selected_rec.contract_warning_reasons:
+                st.write(f"- Contract warning reasons: **{', '.join(selected_rec.contract_warning_reasons)}**")
             else:
                 st.write("- Contract warning reasons: none")
 
-            if stock_warnings:
-                st.write(f"- Stock warning reasons: **{', '.join(stock_warnings)}**")
+            if selected_rec.stock_warning_reasons:
+                st.write(f"- Stock warning reasons: **{', '.join(selected_rec.stock_warning_reasons)}**")
             else:
                 st.write("- Stock warning reasons: none")
 
@@ -1355,61 +1193,20 @@ with tab_details:
             hist = market_provider.get_price_history(selected_symbol)
             render_price_chart(hist, tech, c.breakeven_price)
 
-            st.markdown("### What the technicals mean")
-            explanations = tech_summary.get("technical_explanations", [])
-            if explanations:
-                for item in explanations:
-                    st.write(f"- {item}")
-            else:
-                st.write("No technical interpretation available.")
-
         with st.expander("Alternatives on this stock", expanded=False):
             if not all_symbol_recs:
                 st.write("No qualifying contracts stored for this stock.")
             else:
                 contract_rows = []
                 for rec in all_symbol_recs:
-                    contract = rec.selected_contract
                     contract_row = recommendation_to_row(rec)
-                    contract_row.update(
-                        {
-                            "expiration": contract.expiration_date,
-                            "dte": contract.dte,
-                            "strike": contract.strike,
-                            "premium": contract.premium,
-                            "entry_limit": rec.suggested_entry_limit,
-                            "entry_low": rec.acceptable_entry_low,
-                            "entry_high": rec.acceptable_entry_high,
-                            "breakeven": contract.breakeven_price,
-                            "breakeven_discount_pct": contract.breakeven_discount_pct,
-                            "annualized_secured_yield": contract.annualized_secured_yield,
-                            "profit_take_debit": rec.profit_take_debit,
-                            "fast_profit_take_debit": rec.fast_profit_take_debit,
-                            "contract_score": rec.scores.contract_score_total,
-                            "pres": rec.scores.pres_normalized,
-                            "final_score": rec.scores.final_score,
-                            "confidence": rec.confidence_level,
-                            "technical_label": getattr(rec, "_technical_label", None),
-                            "reasons": "; ".join(rec.top_reasons),
-                            "risks": "; ".join(rec.top_risks),
-                        }
-                    )
                     contract_rows.append(contract_row)
 
                 contract_df = pd.DataFrame(contract_rows)
 
                 contract_sort = st.selectbox(
                     "Sort contracts by",
-                    options=[
-                        "decision_status",
-                        "final_score",
-                        "warning_severity_points",
-                        "annualized_secured_yield",
-                        "breakeven_discount_pct",
-                        "contract_score",
-                        "delta_abs",
-                        "dte",
-                    ],
+                    options=["decision_status", "final_score", "warning_severity_points", "annualized_secured_yield", "breakeven_discount_pct", "contract_score", "delta_abs", "dte"],
                     index=0,
                     key="contract_sort_select",
                 )
@@ -1424,81 +1221,33 @@ with tab_details:
                 contract_df.insert(0, "rank", range(1, len(contract_df) + 1))
 
                 contract_display_cols = [
-                    "rank",
-                    "expiration",
-                    "dte",
-                    "strike",
-                    "premium",
-                    "entry_limit",
-                    "breakeven_discount_pct",
-                    "annualized_secured_yield",
-                    "contract_eligibility_status",
-                    "warning_severity_label",
-                    "decision_status",
-                    "final_score",
-                    "confidence",
-                    "contract_warning_reasons",
-                    "risks",
+                    "rank", "expiration", "dte", "strike", "premium", "entry_limit",
+                    "breakeven_discount_pct", "annualized_secured_yield",
+                    "contract_eligibility_status", "warning_severity_label",
+                    "decision_status", "final_score", "confidence",
+                    "contract_warning_reasons", "risks",
                 ]
                 available_cols = [col for col in contract_display_cols if col in contract_df.columns]
                 st.dataframe(contract_df[available_cols], use_container_width=True)
 
-        with st.expander("Advanced scoring details", expanded=False):
-            score_breakdown = pd.DataFrame(
-                [
-                    {"component": "quality_score", "value": selected_rec.scores.quality_score},
-                    {"component": "event_stability_score", "value": selected_rec.scores.event_stability_score},
-                    {"component": "options_market_quality_score", "value": selected_rec.scores.options_market_quality_score},
-                    {"component": "assignment_comfort_score", "value": selected_rec.scores.assignment_comfort_score},
-                    {"component": "stock_score_total", "value": selected_rec.scores.stock_score_total},
-                    {"component": "breakeven_score", "value": selected_rec.scores.breakeven_score},
-                    {"component": "secured_yield_score", "value": selected_rec.scores.secured_yield_score},
-                    {"component": "delta_fit_score", "value": selected_rec.scores.delta_fit_score},
-                    {"component": "liquidity_score", "value": selected_rec.scores.liquidity_score},
-                    {"component": "dte_fit_score", "value": selected_rec.scores.dte_fit_score},
-                    {"component": "contract_score_total", "value": selected_rec.scores.contract_score_total},
-                    {"component": "pres_normalized", "value": selected_rec.scores.pres_normalized},
-                    {"component": "final_score", "value": selected_rec.scores.final_score},
-                ]
-            )
-            st.dataframe(score_breakdown, use_container_width=True)
-
-
-# ---------------------------
-# Diagnostics
-# ---------------------------
 with tab_diagnostics:
     st.subheader("Diagnostics")
 
     diag_row1_col1, diag_row1_col2 = st.columns(2)
     with diag_row1_col1:
         st.markdown("### Stock-level hard fails")
-        if stock_excl_df.empty:
-            st.write("No stock-level hard fails recorded.")
-        else:
-            st.dataframe(stock_excl_df, use_container_width=True)
-
+        st.dataframe(stock_excl_df, use_container_width=True) if not stock_excl_df.empty else st.write("No stock-level hard fails recorded.")
     with diag_row1_col2:
         st.markdown("### Contract-level hard fails")
-        if contract_excl_df.empty:
-            st.write("No contract-level hard fails recorded.")
-        else:
-            st.dataframe(contract_excl_df, use_container_width=True)
+        st.dataframe(contract_excl_df, use_container_width=True) if not contract_excl_df.empty else st.write("No contract-level hard fails recorded.")
 
     diag_row2_col1, diag_row2_col2 = st.columns(2)
     with diag_row2_col1:
         st.markdown("### Stock-level warnings")
-        if stock_warn_df.empty:
-            st.write("No stock-level warnings recorded.")
-        else:
-            st.dataframe(stock_warn_df, use_container_width=True)
-
+        st.dataframe(stock_warn_df, use_container_width=True) if not stock_warn_df.empty else st.write("No stock-level warnings recorded.")
     with diag_row2_col2:
         st.markdown("### Contract-level warnings")
-        if contract_warn_df.empty:
-            st.write("No contract-level warnings recorded.")
-        else:
-            st.dataframe(contract_warn_df, use_container_width=True)
+        st.dataframe(contract_warn_df, use_container_width=True) if not contract_warn_df.empty else st.write("No contract-level warnings recorded.")
 
     if not ranked_df.empty:
         st.markdown("### Decision status distribution")
@@ -1510,101 +1259,8 @@ with tab_diagnostics:
         )
         st.dataframe(decision_dist, use_container_width=True)
 
-    st.markdown("### Provider errors")
-
-    provider_rows = []
-    for symbol, payload in results_by_symbol.items():
-        if payload.get("exception"):
-            provider_rows.append(
-                {
-                    "symbol": symbol,
-                    "error_type": "top_level_exception",
-                    "error": payload["exception"],
-                }
-            )
-
-        for detail_error in payload.get("provider_detail_errors", []):
-            provider_rows.append(
-                {
-                    "symbol": symbol,
-                    "error_type": "provider_detail",
-                    "error": detail_error,
-                }
-            )
-
-    if provider_rows:
-        provider_errors_df = pd.DataFrame(provider_rows)
-        st.dataframe(provider_errors_df, use_container_width=True)
-
-        with st.expander("Provider error counts by type"):
-            summary_df = (
-                provider_errors_df.groupby("error_type", dropna=False)
-                .size()
-                .reset_index(name="count")
-                .sort_values("count", ascending=False)
-            )
-            st.dataframe(summary_df, use_container_width=True)
-    else:
-        st.write("No provider errors.")
-
-    st.markdown("### Per-symbol scan summary")
-    show_only_symbols_with_issues = st.checkbox(
-        "Show only symbols with issues",
-        value=False,
-        help="Filter to symbols with provider errors, hard fails, warnings, or zero recommendations.",
-    )
-
-    per_symbol_rows = []
-    for symbol, payload in results_by_symbol.items():
-        row = {
-            "symbol": symbol,
-            "contracts_pulled": payload.get("contract_count", 0),
-            "recommendation_count": payload.get("recommendation_count", 0),
-            "stock_eligibility_status": payload.get("stock_eligibility_status"),
-            "stock_hard_fail_reasons": joined(payload.get("stock_hard_fail_reasons", [])),
-            "stock_warning_reasons": joined(payload.get("stock_warning_reasons", [])),
-            "contract_hard_fail_count": len(payload.get("contract_hard_fail_reasons", [])),
-            "contract_warning_count": len(payload.get("contract_warning_reasons", [])),
-            "provider_error": payload.get("exception"),
-            "provider_detail_error_count": len(payload.get("provider_detail_errors", [])),
-            "provider_detail_errors": "; ".join(payload.get("provider_detail_errors", [])),
-        }
-
-        has_issue = (
-            bool(payload.get("exception"))
-            or bool(payload.get("provider_detail_errors"))
-            or bool(payload.get("stock_hard_fail_reasons"))
-            or bool(payload.get("stock_warning_reasons"))
-            or bool(payload.get("contract_hard_fail_reasons"))
-            or bool(payload.get("contract_warning_reasons"))
-            or payload.get("recommendation_count", 0) == 0
-        )
-
-        if not show_only_symbols_with_issues or has_issue:
-            per_symbol_rows.append(row)
-
-    per_symbol_df = pd.DataFrame(per_symbol_rows)
-    st.dataframe(per_symbol_df, use_container_width=True)
-
-
-# ---------------------------
-# Debug / Validation
-# ---------------------------
 with tab_debug:
     st.subheader("Debug / Validation")
-
-    st.markdown(
-        """
-Use this tab to paste:
-- traceback / error logs
-- raw JSON or dict output
-- recommendation rows
-- contract payloads
-- copied DataFrame rows
-
-This is intended to make validation faster when something looks off.
-"""
-    )
 
     debug_mode = st.radio(
         "What are you pasting?",
@@ -1618,57 +1274,21 @@ This is intended to make validation faster when something looks off.
         horizontal=False,
     )
 
-    pasted_text = st.text_area(
-        "Paste content here",
-        height=250,
-        placeholder="Paste traceback, JSON, dict output, copied row data, or raw contract payload here...",
-    )
+    pasted_text = st.text_area("Paste content here", height=250)
 
     if st.button("Validate pasted content"):
         if debug_mode == "Raw text / traceback":
-            st.markdown("### Raw text")
             st.code(pasted_text)
-
-            lower_text = pasted_text.lower()
-            quick_flags = []
-
-            if "traceback" in lower_text:
-                quick_flags.append("Contains traceback")
-            if "error" in lower_text:
-                quick_flags.append("Contains error")
-            if "exception" in lower_text:
-                quick_flags.append("Contains exception")
-            if "403" in lower_text or "forbidden" in lower_text:
-                quick_flags.append("Contains HTTP 403 / Forbidden")
-            if "yfinance" in lower_text:
-                quick_flags.append("Mentions yfinance")
-            if "delta" in lower_text:
-                quick_flags.append("Mentions delta")
-
-            if quick_flags:
-                for flag in quick_flags:
-                    st.write(f"- {flag}")
-            else:
-                st.write("No obvious patterns found.")
-
         elif debug_mode == "JSON / dict payload":
             parsed, parser_used, parse_error = try_parse_structured(pasted_text)
-
             if parsed is None:
                 st.error(f"Could not parse structured content: {parse_error}")
                 st.code(pasted_text)
             else:
                 st.success(f"Parsed successfully using: {parser_used}")
-                st.write("Parsed object type:", type(parsed).__name__)
                 st.json(parsed)
-
-                if isinstance(parsed, dict):
-                    st.markdown("### Top-level keys")
-                    st.write(list(parsed.keys()))
-
         elif debug_mode == "Recommendation row":
             parsed, parser_used, parse_error = try_parse_structured(pasted_text)
-
             if parsed is None or not isinstance(parsed, dict):
                 st.error("Recommendation row should parse into a dictionary-like object.")
                 if parse_error:
@@ -1676,12 +1296,9 @@ This is intended to make validation faster when something looks off.
             else:
                 st.success(f"Parsed recommendation row using: {parser_used}")
                 st.json(parsed)
-                st.markdown("### Validation results")
                 st.dataframe(validate_recommendation_like(parsed), use_container_width=True)
-
         elif debug_mode == "Contract payload":
             parsed, parser_used, parse_error = try_parse_structured(pasted_text)
-
             if parsed is None or not isinstance(parsed, dict):
                 st.error("Contract payload should parse into a dictionary-like object.")
                 if parse_error:
@@ -1689,19 +1306,6 @@ This is intended to make validation faster when something looks off.
             else:
                 st.success(f"Parsed contract payload using: {parser_used}")
                 st.json(parsed)
-                st.markdown("### Validation results")
                 st.dataframe(validate_contract_like(parsed), use_container_width=True)
-
-        elif debug_mode == "DataFrame rows / CSV-like text":
-            st.markdown("### Raw pasted rows")
+        else:
             st.code(pasted_text)
-
-            lines = [line for line in pasted_text.splitlines() if line.strip()]
-            st.write(f"Detected {len(lines)} non-empty lines.")
-
-            if len(lines) >= 2:
-                st.info(
-                    "This looks like tabular text. The next step could be adding a parser for tab-separated or CSV rows."
-                )
-            else:
-                st.warning("Not enough lines detected to infer a table.")
