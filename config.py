@@ -18,15 +18,12 @@ class ScanConfig:
 
     min_open_interest: int = 500
     min_volume: int = 25
-    max_spread_pct: float = 0.12
+    max_spread_pct: float = 0.15
     min_bid: float = 0.25
     min_premium: float = 0.35
 
     otm_only: bool = True
     exclude_earnings_before_expiry: bool = True
-
-    # New: controls whether unknown earnings date is a hard fail when
-    # exclude_earnings_before_expiry is enabled.
     strict_earnings_date_handling: bool = False
 
     require_quality_data: bool = False
@@ -42,3 +39,18 @@ class ScanConfig:
     weight_stock_score: float = 0.40
     weight_contract_score: float = 0.45
     weight_pres: float = 0.15
+
+    # missing scoring knobs
+    fcf_half_sat: float = 0.06
+    oi_half_sat: float = 1000.0
+    volume_half_sat: float = 100.0
+    breakeven_half_sat: float = 0.10
+
+    safe_event_score: float = 100.0
+    unknown_event_score: float = 60.0
+    unsafe_event_score: float = 0.0
+
+    weight_quality: float = 0.35
+    weight_event_stability: float = 0.25
+    weight_options_market_quality: float = 0.20
+    weight_assignment_comfort: float = 0.20
