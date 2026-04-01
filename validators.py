@@ -39,7 +39,6 @@ def _finalize_stock_validation(metrics: StockMetrics) -> StockMetrics:
     else:
         metrics.stock_eligibility_status = "eligible"
 
-    # Backward-compatible alias for existing UI/reporting code
     metrics.stock_exclusion_reasons = list(metrics.stock_hard_fail_reasons)
     return metrics
 
@@ -69,7 +68,6 @@ def _finalize_contract_validation(contract: OptionContract) -> OptionContract:
     else:
         contract.contract_eligibility_status = "eligible"
 
-    # Backward-compatible alias for existing UI/reporting code
     contract.contract_exclusion_reasons = list(contract.contract_hard_fail_reasons)
     return contract
 
@@ -141,7 +139,10 @@ def validate_contract(
 
     if cfg.exclude_earnings_before_expiry and metrics is not None:
         if metrics.days_to_earnings is None:
-            _add_contract_hard_fail(contract, "earnings_date_unknown")
+            if cfg.strict_earnings_date_handling:
+                _add_contract_hard_fail(contract, "earnings_date_unknown")
+            else:
+                _add_contract_warning(contract, "earnings_date_unknown")
         elif metrics.days_to_earnings <= contract.dte:
             _add_contract_hard_fail(contract, "earnings_before_expiry")
     elif metrics is not None:
