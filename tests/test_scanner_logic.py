@@ -81,9 +81,9 @@ def test_excludes_contract_when_bid_below_min():
 
 
 def test_excludes_contract_when_premium_too_low():
-    cfg = ScanConfig(min_premium=0.35)
-    metrics = make_metrics()
-    raw_contract = make_contract(bid=0.10, ask=0.20)
+    cfg = ScanConfig(min_premium=0.35, exclude_earnings_before_expiry=False)
+    metrics = make_metrics(days_to_earnings=60, earnings_date=date.today() + timedelta(days=60))
+    raw_contract = make_contract(bid=0.40, ask=0.50, mark=0.34)
 
     contract = derive_contract_metrics(raw_contract, metrics.stock_price)
     contract = validate_contract(contract, cfg, metrics)
