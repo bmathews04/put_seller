@@ -16,7 +16,112 @@ from technicals import (
 
 st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
+st.markdown("""
+<style>
+/* Tighten overall page spacing */
+.block-container {
+    padding-top: 1.2rem;
+    padding-bottom: 1.0rem;
+    max-width: 1500px;
+}
 
+/* Slightly reduce extra white space around tab content */
+div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stTabs"]) {
+    gap: 0.35rem;
+}
+
+/* Make headings feel tighter */
+h1, h2, h3 {
+    margin-bottom: 0.35rem !important;
+}
+h1 {
+    margin-top: 0.1rem !important;
+}
+h2, h3 {
+    margin-top: 0.5rem !important;
+}
+
+/* Tighten metric cards a bit */
+div[data-testid="metric-container"] {
+    padding-top: 0.35rem;
+    padding-bottom: 0.35rem;
+}
+
+/* Make sidebar less visually heavy */
+section[data-testid="stSidebar"] .block-container {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+}
+section[data-testid="stSidebar"] hr {
+    margin-top: 0.6rem;
+    margin-bottom: 0.6rem;
+}
+
+/* Tighten expander spacing */
+div[data-testid="stExpander"] {
+    margin-top: 0.35rem;
+    margin-bottom: 0.35rem;
+}
+
+/* Make dataframes breathe a little less */
+div[data-testid="stDataFrame"] {
+    margin-top: 0.25rem;
+    margin-bottom: 0.35rem;
+}
+
+/* Small badge styles for decision labels */
+.decision-badge {
+    display: inline-block;
+    padding: 0.22rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    margin-bottom: 0.35rem;
+}
+.decision-ready {
+    background: rgba(34, 197, 94, 0.14);
+    color: rgb(21, 128, 61);
+}
+.decision-review {
+    background: rgba(234, 179, 8, 0.16);
+    color: rgb(161, 98, 7);
+}
+.decision-pass {
+    background: rgba(239, 68, 68, 0.14);
+    color: rgb(185, 28, 28);
+}
+
+/* Top action idea card */
+.idea-card {
+    border: 1px solid rgba(128,128,128,0.18);
+    border-radius: 12px;
+    padding: 0.75rem 0.85rem 0.55rem 0.85rem;
+    margin-bottom: 0.65rem;
+    background: rgba(255,255,255,0.02);
+}
+.idea-title {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 0.2rem;
+}
+.idea-sub {
+    font-size: 0.9rem;
+    opacity: 0.85;
+    margin-bottom: 0.45rem;
+}
+.idea-watchout {
+    font-size: 0.84rem;
+    opacity: 0.9;
+    margin-top: 0.25rem;
+}
+
+/* Slightly tighten captions */
+.caption-tight {
+    font-size: 0.84rem;
+    opacity: 0.85;
+}
+</style>
+""", unsafe_allow_html=True)
 # ---------------------------
 # Session state initialization
 # ---------------------------
@@ -91,6 +196,13 @@ def decision_emoji(value):
         "Pass": "🔴",
     }.get(value, "⚪")
 
+def decision_badge_html(status: str) -> str:
+    css_class = {
+        "Ready": "decision-ready",
+        "Review": "decision-review",
+        "Pass": "decision-pass",
+    }.get(status, "decision-review")
+    return f'<span class="decision-badge {css_class}">{decision_emoji(status)} {status}</span>'
 
 def derive_decision_status(row):
     confidence = row.get("confidence")
@@ -431,16 +543,31 @@ def build_scan_changes(current_df: pd.DataFrame, previous_df: pd.DataFrame):
 
 
 def render_action_idea_row(row, idx):
-    st.markdown(f"**#{idx} {decision_emoji(row.get('decision_status'))} {row.get('symbol')} — {row.get('decision_status', 'Review')}**")
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Contract", f"{fmt_num(row.get('strike'))}P / {row.get('expiration')}")
-    c2.metric("Entry", fmt_num(row.get("entry_limit")))
-    c3.metric("Yield", fmt_pct(row.get("annualized_secured_yield")))
-    c4.metric("Cushion", fmt_pct(row.get("breakeven_discount_pct")))
-    c5.metric("Score", fmt_num(row.get("final_score")))
-    c6.metric("Confidence", row.get("confidence"))
-    st.caption(f"Technical: {row.get('technical_label', 'Unknown')} | Watchout: {row.get('risks', '—')}")
-    st.divider()
+    status = row.get("decision_status", "Review")
+    st.markdown(
+        f"""
+        <div class="idea-card">
+            <div class="idea-title">#{idx} {row.get('symbol')} — {decision_badge_html(status)}</div>
+            <div class="idea-sub">
+                {fmt_num(row.get('strike'))}P / {row.get('expiration')} / {row.get('dte')} DTE
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Entry", fmt_num(row.get("entry_limit")))
+    c2.metric("Yield", fmt_pct(row.get("annualized_secured_yield")))
+    c3.metric("Cushion", fmt_pct(row.get("breakeven_discount_pct")))
+    c4.metric("Score", fmt_num(row.get("final_score")))
+    c5.metric("Confidence", row.get("confidence"))
+
+    st.markdown(
+        f'<div class="idea-watchout"><strong>Technical:</strong> {row.get("technical_label", "Unknown")} | '
+        f'<strong>Watchout:</strong> {row.get("risks", "—")}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------
@@ -752,7 +879,8 @@ with tab_dashboard:
 
         hero1, hero2, hero3, hero4, hero5, hero6 = st.columns(6)
         hero1.metric("Symbol", best["symbol"])
-        hero2.metric("Decision", f"{decision_emoji(best.get('decision_status'))} {best.get('decision_status')}")
+        hero2.markdown(decision_badge_html(best.get("decision_status", "Review")), unsafe_allow_html=True)
+        hero2.caption("Decision status")        
         hero3.metric("Contract", f"{fmt_num(best['strike'])}P")
         hero4.metric("Expiration / DTE", f"{best['expiration']} / {int(best['dte'])}")
         hero5.metric("Suggested entry", fmt_num(best["entry_limit"]))
@@ -766,10 +894,11 @@ with tab_dashboard:
         hero11.metric("Final score", fmt_num(best["final_score"]))
         hero12.metric("Gap vs #2", fmt_num(next_gap))
 
-        st.caption(
-            f"Technical: {best.get('technical_label', 'Unknown')} | "
-            f"Trend: {best.get('trend_state', 'Unknown')} | "
-            f"Watchout: {best.get('risks', '—')}"
+        st.markdown(
+            f'<div class="caption-tight"><strong>Technical:</strong> {best.get("technical_label", "Unknown")} | '
+            f'<strong>Trend:</strong> {best.get("trend_state", "Unknown")} | '
+            f'<strong>Watchout:</strong> {best.get("risks", "—")}</div>',
+            unsafe_allow_html=True,
         )
         st.write(f"**Why it stands out:** {best.get('reasons', '—')}")
 
@@ -813,6 +942,7 @@ with tab_ranked:
         default_max_dte = int(ranked_df["dte"].max()) if "dte" in ranked_df.columns else int(cfg.max_dte)
 
         st.markdown("### Filter the ranked list")
+        st.caption("Use these to narrow the candidate list before comparing contracts.")
         rank_filter_col1, rank_filter_col2, rank_filter_col3 = st.columns(3)
 
         with rank_filter_col1:
@@ -873,6 +1003,7 @@ with tab_ranked:
         )
 
         st.markdown("### Compare candidates")
+        st.caption("Default view keeps only the most decision-useful columns visible.")
         sort_col = st.selectbox(
             "Sort ranked setups by",
             options=[
@@ -980,7 +1111,8 @@ with tab_details:
                 st.write(line)
 
             a1, a2, a3, a4, a5, a6 = st.columns(6)
-            a1.metric("Decision", f"{decision_emoji(decision_status)} {decision_status}")
+            a1.markdown(decision_badge_html(decision_status), unsafe_allow_html=True)
+            a1.caption("Decision status")
             a2.metric("Contract", f"{selected_rec.symbol} {fmt_num(c.strike)}P")
             a3.metric("Suggested entry", fmt_num(selected_rec.suggested_entry_limit))
             a4.metric("50% take-profit", fmt_num(selected_rec.profit_take_debit))
