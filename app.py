@@ -18,19 +18,16 @@ st.set_page_config(page_title="Passive Put Scanner", layout="wide")
 
 st.markdown("""
 <style>
-/* Tighten overall page spacing */
 .block-container {
     padding-top: 1.2rem;
     padding-bottom: 1.0rem;
     max-width: 1500px;
 }
 
-/* Slightly reduce extra white space around tab content */
 div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stTabs"]) {
     gap: 0.35rem;
 }
 
-/* Make headings feel tighter */
 h1, h2, h3 {
     margin-bottom: 0.35rem !important;
 }
@@ -41,13 +38,11 @@ h2, h3 {
     margin-top: 0.5rem !important;
 }
 
-/* Tighten metric cards a bit */
 div[data-testid="metric-container"] {
     padding-top: 0.35rem;
     padding-bottom: 0.35rem;
 }
 
-/* Make sidebar less visually heavy */
 section[data-testid="stSidebar"] .block-container {
     padding-top: 1rem;
     padding-bottom: 1rem;
@@ -57,19 +52,16 @@ section[data-testid="stSidebar"] hr {
     margin-bottom: 0.6rem;
 }
 
-/* Tighten expander spacing */
 div[data-testid="stExpander"] {
     margin-top: 0.35rem;
     margin-bottom: 0.35rem;
 }
 
-/* Make dataframes breathe a little less */
 div[data-testid="stDataFrame"] {
     margin-top: 0.25rem;
     margin-bottom: 0.35rem;
 }
 
-/* Small badge styles for decision labels */
 .decision-badge {
     display: inline-block;
     padding: 0.22rem 0.55rem;
@@ -91,7 +83,27 @@ div[data-testid="stDataFrame"] {
     color: rgb(185, 28, 28);
 }
 
-/* Top action idea card */
+.eligibility-badge {
+    display: inline-block;
+    padding: 0.18rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin-bottom: 0.2rem;
+}
+.eligibility-clean {
+    background: rgba(34, 197, 94, 0.12);
+    color: rgb(21, 128, 61);
+}
+.eligibility-warning {
+    background: rgba(234, 179, 8, 0.16);
+    color: rgb(161, 98, 7);
+}
+.eligibility-fail {
+    background: rgba(239, 68, 68, 0.14);
+    color: rgb(185, 28, 28);
+}
+
 .idea-card {
     border: 1px solid rgba(128,128,128,0.18);
     border-radius: 12px;
@@ -115,13 +127,13 @@ div[data-testid="stDataFrame"] {
     margin-top: 0.25rem;
 }
 
-/* Slightly tighten captions */
 .caption-tight {
     font-size: 0.84rem;
     opacity: 0.85;
 }
 </style>
 """, unsafe_allow_html=True)
+
 # ---------------------------
 # Session state initialization
 # ---------------------------
@@ -145,6 +157,12 @@ if "stock_excl_df" not in st.session_state:
 
 if "contract_excl_df" not in st.session_state:
     st.session_state.contract_excl_df = pd.DataFrame()
+
+if "stock_warn_df" not in st.session_state:
+    st.session_state.stock_warn_df = pd.DataFrame()
+
+if "contract_warn_df" not in st.session_state:
+    st.session_state.contract_warn_df = pd.DataFrame()
 
 if "scan_summary" not in st.session_state:
     st.session_state.scan_summary = {}
@@ -196,6 +214,7 @@ def decision_emoji(value):
         "Pass": "🔴",
     }.get(value, "⚪")
 
+
 def decision_badge_html(status: str) -> str:
     css_class = {
         "Ready": "decision-ready",
@@ -203,6 +222,26 @@ def decision_badge_html(status: str) -> str:
         "Pass": "decision-pass",
     }.get(status, "decision-review")
     return f'<span class="decision-badge {css_class}">{decision_emoji(status)} {status}</span>'
+
+
+def eligibility_badge_html(status: str) -> str:
+    label_map = {
+        "eligible": "Eligible",
+        "eligible_with_warnings": "Eligible with warnings",
+        "ineligible": "Ineligible",
+    }
+    css_class = {
+        "eligible": "eligibility-clean",
+        "eligible_with_warnings": "eligibility-warning",
+        "ineligible": "eligibility-fail",
+    }.get(status, "eligibility-warning")
+    label = label_map.get(status, status or "Unknown")
+    return f'<span class="eligibility-badge {css_class}">{label}</span>'
+
+
+def joined(items):
+    return "; ".join(items) if items else ""
+
 
 def derive_decision_status(row):
     confidence = row.get("confidence")
@@ -262,41 +301,52 @@ def recommendation_to_row(rec):
         "cushion_atr_units": getattr(rec, "_cushion_atr_units", None),
         "technical_score": getattr(rec, "_technical_score", None),
         "technical_label": getattr(rec, "_technical_label", None),
+        "contract_eligibility_status": getattr(c, "contract_eligibility_status", None),
+        "contract_hard_fail_reasons": joined(getattr(c, "contract_hard_fail_reasons", [])),
+        "contract_warning_reasons": joined(getattr(c, "contract_warning_reasons", [])),
     }
     row["decision_status"] = derive_decision_status(row)
     return row
 
 
-def summarize_exclusions(results_by_symbol):
-    stock_exclusions = {}
-    contract_exclusions = {}
+def summarize_reason_lists(rows, key_name="reason"):
+    counts = {}
+    for row in rows:
+        for reason in row:
+            counts[reason] = counts.get(reason, 0) + 1
+
+    if not counts:
+        return pd.DataFrame(columns=[key_name, "count"])
+
+    return (
+        pd.DataFrame([{key_name: k, "count": v} for k, v in counts.items()])
+        .sort_values("count", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def summarize_eligibility(results_by_symbol):
+    stock_hard_fail_lists = []
+    stock_warning_lists = []
+    contract_hard_fail_lists = []
+    contract_warning_lists = []
 
     for _, payload in results_by_symbol.items():
-        stock_reasons = payload.get("stock_exclusion_reasons", [])
-        contract_reason_lists = payload.get("contract_exclusion_reasons", [])
+        stock_hard_fail_lists.append(payload.get("stock_hard_fail_reasons", []))
+        stock_warning_lists.append(payload.get("stock_warning_reasons", []))
 
-        for reason in stock_reasons:
-            stock_exclusions[reason] = stock_exclusions.get(reason, 0) + 1
+        for reason_list in payload.get("contract_hard_fail_reasons", []):
+            contract_hard_fail_lists.append(reason_list)
 
-        for reason_list in contract_reason_lists:
-            for reason in reason_list:
-                contract_exclusions[reason] = contract_exclusions.get(reason, 0) + 1
+        for reason_list in payload.get("contract_warning_reasons", []):
+            contract_warning_lists.append(reason_list)
 
-    stock_df = (
-        pd.DataFrame([{"reason": k, "count": v} for k, v in stock_exclusions.items()])
-        .sort_values("count", ascending=False)
-        if stock_exclusions
-        else pd.DataFrame(columns=["reason", "count"])
-    )
+    stock_excl_df = summarize_reason_lists(stock_hard_fail_lists, "reason")
+    stock_warn_df = summarize_reason_lists(stock_warning_lists, "reason")
+    contract_excl_df = summarize_reason_lists(contract_hard_fail_lists, "reason")
+    contract_warn_df = summarize_reason_lists(contract_warning_lists, "reason")
 
-    contract_df = (
-        pd.DataFrame([{"reason": k, "count": v} for k, v in contract_exclusions.items()])
-        .sort_values("count", ascending=False)
-        if contract_exclusions
-        else pd.DataFrame(columns=["reason", "count"])
-    )
-
-    return stock_df, contract_df
+    return stock_excl_df, contract_excl_df, stock_warn_df, contract_warn_df
 
 
 def try_parse_structured(text: str):
@@ -330,6 +380,9 @@ def validate_contract_like(obj):
         "volume",
         "implied_volatility",
         "in_the_money",
+        "contract_eligibility_status",
+        "contract_hard_fail_reasons",
+        "contract_warning_reasons",
     ]
 
     findings = []
@@ -423,8 +476,8 @@ def describe_trade_setup(rec):
     )
 
     if reasons:
-        joined = ", ".join(r.lower() for r in reasons)
-        lines.append(f"This stands out because of {joined}.")
+        joined_reasons = ", ".join(r.lower() for r in reasons)
+        lines.append(f"This stands out because of {joined_reasons}.")
 
     lines.append(
         f"Your break-even is {fmt_num(contract.breakeven_price)}, and the standard profit-taking level is {fmt_num(rec.profit_take_debit)}."
@@ -544,6 +597,8 @@ def build_scan_changes(current_df: pd.DataFrame, previous_df: pd.DataFrame):
 
 def render_action_idea_row(row, idx):
     status = row.get("decision_status", "Review")
+    eligibility_status = row.get("contract_eligibility_status", "eligible_with_warnings")
+
     st.markdown(
         f"""
         <div class="idea-card">
@@ -555,6 +610,8 @@ def render_action_idea_row(row, idx):
         """,
         unsafe_allow_html=True,
     )
+
+    st.markdown(eligibility_badge_html(eligibility_status), unsafe_allow_html=True)
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Entry", fmt_num(row.get("entry_limit")))
@@ -568,6 +625,9 @@ def render_action_idea_row(row, idx):
         f'<strong>Watchout:</strong> {row.get("risks", "—")}</div>',
         unsafe_allow_html=True,
     )
+
+    if row.get("contract_warning_reasons"):
+        st.caption(f"Warnings: {row.get('contract_warning_reasons')}")
 
 
 # ---------------------------
@@ -636,6 +696,8 @@ with st.sidebar:
         st.session_state.previous_ranked_df = pd.DataFrame()
         st.session_state.stock_excl_df = pd.DataFrame()
         st.session_state.contract_excl_df = pd.DataFrame()
+        st.session_state.stock_warn_df = pd.DataFrame()
+        st.session_state.contract_warn_df = pd.DataFrame()
         st.session_state.scan_summary = {}
         st.session_state.last_scan_cfg = None
         st.session_state.selected_detail_symbol = None
@@ -730,8 +792,11 @@ if run_scan:
         progress.progress(idx / len(symbols))
 
         results_by_symbol[symbol] = {
-            "stock_exclusion_reasons": [],
-            "contract_exclusion_reasons": [],
+            "stock_eligibility_status": None,
+            "stock_hard_fail_reasons": [],
+            "stock_warning_reasons": [],
+            "contract_hard_fail_reasons": [],
+            "contract_warning_reasons": [],
             "contract_count": 0,
             "recommendation_count": 0,
             "recommendations": [],
@@ -751,21 +816,30 @@ if run_scan:
             results_by_symbol[symbol]["contract_count"] = len(contracts)
 
             if not contracts:
-                results_by_symbol[symbol]["stock_exclusion_reasons"].append("no_option_chain")
+                results_by_symbol[symbol]["stock_eligibility_status"] = "ineligible"
+                results_by_symbol[symbol]["stock_hard_fail_reasons"].append("no_option_chain")
                 continue
 
             recs = build_recommendations_for_stock(metrics, contracts, cfg)
 
-            contract_reason_lists = []
-            for c in contracts:
-                reasons = getattr(c, "contract_exclusion_reasons", [])
-                if reasons:
-                    contract_reason_lists.append(reasons)
-            results_by_symbol[symbol]["contract_exclusion_reasons"] = contract_reason_lists
+            results_by_symbol[symbol]["stock_eligibility_status"] = getattr(metrics, "stock_eligibility_status", None)
+            results_by_symbol[symbol]["stock_hard_fail_reasons"] = list(getattr(metrics, "stock_hard_fail_reasons", []))
+            results_by_symbol[symbol]["stock_warning_reasons"] = list(getattr(metrics, "stock_warning_reasons", []))
 
-            stock_reasons = getattr(metrics, "stock_exclusion_reasons", [])
-            if stock_reasons:
-                results_by_symbol[symbol]["stock_exclusion_reasons"] = stock_reasons
+            contract_hard_fail_lists = []
+            contract_warning_lists = []
+
+            for c in contracts:
+                hard_reasons = list(getattr(c, "contract_hard_fail_reasons", []))
+                warning_reasons = list(getattr(c, "contract_warning_reasons", []))
+
+                if hard_reasons:
+                    contract_hard_fail_lists.append(hard_reasons)
+                if warning_reasons:
+                    contract_warning_lists.append(warning_reasons)
+
+            results_by_symbol[symbol]["contract_hard_fail_reasons"] = contract_hard_fail_lists
+            results_by_symbol[symbol]["contract_warning_reasons"] = contract_warning_lists
 
             if recs:
                 hist = market_provider.get_price_history(symbol)
@@ -795,8 +869,9 @@ if run_scan:
 
                 all_recommendations.append(recs[0])
             else:
-                if not results_by_symbol[symbol]["stock_exclusion_reasons"]:
-                    results_by_symbol[symbol]["stock_exclusion_reasons"].append("no_valid_contracts")
+                if not results_by_symbol[symbol]["stock_hard_fail_reasons"]:
+                    results_by_symbol[symbol]["stock_eligibility_status"] = "ineligible"
+                    results_by_symbol[symbol]["stock_hard_fail_reasons"].append("no_valid_contracts")
 
         except Exception as e:
             results_by_symbol[symbol]["exception"] = str(e)
@@ -814,7 +889,7 @@ if run_scan:
         ranked_rows.append(row)
 
     ranked_df = pd.DataFrame(ranked_rows)
-    stock_excl_df, contract_excl_df = summarize_exclusions(results_by_symbol)
+    stock_excl_df, contract_excl_df, stock_warn_df, contract_warn_df = summarize_eligibility(results_by_symbol)
 
     scan_summary = {
         "symbols_in_universe": len(symbols),
@@ -826,6 +901,12 @@ if run_scan:
             for v in results_by_symbol.values()
             if v.get("exception") or v.get("provider_detail_errors")
         ),
+        "symbols_with_stock_warnings": sum(
+            1 for v in results_by_symbol.values() if v.get("stock_warning_reasons")
+        ),
+        "symbols_with_contract_warnings": sum(
+            1 for v in results_by_symbol.values() if v.get("contract_warning_reasons")
+        ),
     }
 
     st.session_state.previous_ranked_df = st.session_state.ranked_df.copy()
@@ -834,6 +915,8 @@ if run_scan:
     st.session_state.ranked_df = ranked_df
     st.session_state.stock_excl_df = stock_excl_df
     st.session_state.contract_excl_df = contract_excl_df
+    st.session_state.stock_warn_df = stock_warn_df
+    st.session_state.contract_warn_df = contract_warn_df
     st.session_state.scan_summary = scan_summary
     st.session_state.scan_completed = True
     st.session_state.last_scan_cfg = cfg
@@ -847,6 +930,8 @@ else:
     ranked_df = st.session_state.ranked_df
     stock_excl_df = st.session_state.stock_excl_df
     contract_excl_df = st.session_state.contract_excl_df
+    stock_warn_df = st.session_state.stock_warn_df
+    contract_warn_df = st.session_state.contract_warn_df
     scan_summary = st.session_state.scan_summary
 
 previous_ranked_df = st.session_state.previous_ranked_df
@@ -858,12 +943,14 @@ new_symbols, dropped_symbols, movers_df = build_scan_changes(ranked_df, previous
 with tab_dashboard:
     st.subheader("Decision Board")
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("Universe scanned", scan_summary.get("symbols_in_universe", 0))
     c2.metric("Names with setups", scan_summary.get("symbols_with_recommendations", 0))
     c3.metric("Names without setups", scan_summary.get("symbols_without_recommendations", 0))
     c4.metric("Contracts pulled", scan_summary.get("total_contracts_pulled", 0))
     c5.metric("Provider errors", scan_summary.get("symbols_with_provider_errors", 0))
+    c6.metric("Stock warnings", scan_summary.get("symbols_with_stock_warnings", 0))
+    c7.metric("Contract warnings", scan_summary.get("symbols_with_contract_warnings", 0))
 
     if ranked_df.empty:
         st.warning("No recommendations found for this scan.")
@@ -880,11 +967,13 @@ with tab_dashboard:
         hero1, hero2, hero3, hero4, hero5, hero6 = st.columns(6)
         hero1.metric("Symbol", best["symbol"])
         hero2.markdown(decision_badge_html(best.get("decision_status", "Review")), unsafe_allow_html=True)
-        hero2.caption("Decision status")        
+        hero2.caption("Decision status")
         hero3.metric("Contract", f"{fmt_num(best['strike'])}P")
         hero4.metric("Expiration / DTE", f"{best['expiration']} / {int(best['dte'])}")
         hero5.metric("Suggested entry", fmt_num(best["entry_limit"]))
         hero6.metric("Confidence", best["confidence"])
+
+        st.markdown(eligibility_badge_html(best.get("contract_eligibility_status", "eligible")), unsafe_allow_html=True)
 
         hero7, hero8, hero9, hero10, hero11, hero12 = st.columns(6)
         hero7.metric("Premium", fmt_num(best["premium"]))
@@ -901,6 +990,9 @@ with tab_dashboard:
             unsafe_allow_html=True,
         )
         st.write(f"**Why it stands out:** {best.get('reasons', '—')}")
+
+        if best.get("contract_warning_reasons"):
+            st.caption(f"Contract warnings: {best.get('contract_warning_reasons')}")
 
         st.markdown("### Top actionable ideas")
         for idx, (_, row) in enumerate(dashboard_df.head(3).iterrows(), start=1):
@@ -1036,6 +1128,7 @@ with tab_ranked:
             "breakeven_discount_pct",
             "annualized_secured_yield",
             "technical_label",
+            "contract_eligibility_status",
             "decision_status",
             "final_score",
             "confidence",
@@ -1058,6 +1151,8 @@ with tab_ranked:
             "contract_score",
             "pres",
             "warning_flags",
+            "contract_warning_reasons",
+            "contract_hard_fail_reasons",
             "reasons",
         ]
 
@@ -1067,11 +1162,17 @@ with tab_ranked:
 
         if not ranked_sorted.empty:
             with st.expander("Filtered list summary", expanded=False):
-                s1, s2, s3, s4 = st.columns(4)
+                s1, s2, s3, s4, s5 = st.columns(5)
                 s1.metric("Filtered setups", len(ranked_sorted))
                 s2.metric("Ready", int(ranked_sorted["decision_status"].eq("Ready").sum()))
                 s3.metric("Review", int(ranked_sorted["decision_status"].eq("Review").sum()))
                 s4.metric("Pass", int(ranked_sorted["decision_status"].eq("Pass").sum()))
+                s5.metric(
+                    "Warned",
+                    int(ranked_sorted["contract_eligibility_status"].eq("eligible_with_warnings").sum())
+                    if "contract_eligibility_status" in ranked_sorted.columns
+                    else 0,
+                )
 
 
 # ---------------------------
@@ -1104,6 +1205,7 @@ with tab_details:
 
         row_for_status = recommendation_to_row(selected_rec)
         decision_status = row_for_status.get("decision_status", "Review")
+        contract_eligibility_status = getattr(c, "contract_eligibility_status", "eligible")
 
         with st.expander("Trade summary", expanded=True):
             summary_lines = describe_trade_setup(selected_rec)
@@ -1118,6 +1220,8 @@ with tab_details:
             a4.metric("50% take-profit", fmt_num(selected_rec.profit_take_debit))
             a5.metric("Break-even", fmt_num(c.breakeven_price))
             a6.metric("Confidence", selected_rec.confidence_level)
+
+            st.markdown(eligibility_badge_html(contract_eligibility_status), unsafe_allow_html=True)
 
             b1, b2, b3, b4 = st.columns(4)
             b1.metric("Annualized yield", fmt_pct(c.annualized_secured_yield))
@@ -1154,8 +1258,24 @@ with tab_details:
             else:
                 st.write("No major watchouts identified.")
 
+            st.markdown("### Validation / eligibility details")
+            hard_fails = getattr(c, "contract_hard_fail_reasons", [])
+            warnings = getattr(c, "contract_warning_reasons", [])
+
+            st.write(f"- Eligibility status: **{contract_eligibility_status}**")
+
+            if hard_fails:
+                st.write(f"- Hard fail reasons: **{', '.join(hard_fails)}**")
+            else:
+                st.write("- Hard fail reasons: none")
+
+            if warnings:
+                st.write(f"- Warning reasons: **{', '.join(warnings)}**")
+            else:
+                st.write("- Warning reasons: none")
+
             if selected_rec.warning_flags:
-                st.write(f"Warning flags: {', '.join(selected_rec.warning_flags)}")
+                st.write(f"- Merged warning flags: **{', '.join(selected_rec.warning_flags)}**")
 
         with st.expander("Technicals", expanded=False):
             summary1, summary2, summary3 = st.columns(3)
@@ -1220,6 +1340,9 @@ with tab_details:
                         "reasons": "; ".join(rec.top_reasons),
                         "risks": "; ".join(rec.top_risks),
                         "warning_flags": "; ".join(rec.warning_flags),
+                        "contract_eligibility_status": getattr(contract, "contract_eligibility_status", None),
+                        "contract_hard_fail_reasons": joined(getattr(contract, "contract_hard_fail_reasons", [])),
+                        "contract_warning_reasons": joined(getattr(contract, "contract_warning_reasons", [])),
                     }
                     contract_row["decision_status"] = derive_decision_status(contract_row)
                     contract_rows.append(contract_row)
@@ -1252,33 +1375,35 @@ with tab_details:
                     "entry_limit",
                     "breakeven_discount_pct",
                     "annualized_secured_yield",
+                    "contract_eligibility_status",
                     "decision_status",
                     "final_score",
                     "confidence",
+                    "contract_warning_reasons",
                     "risks",
                 ]
                 available_cols = [col for col in contract_display_cols if col in contract_df.columns]
                 st.dataframe(contract_df[available_cols], use_container_width=True)
 
-            with st.expander("Advanced scoring details", expanded=False):
-                score_breakdown = pd.DataFrame(
-                    [
-                        {"component": "quality_score", "value": selected_rec.scores.quality_score},
-                        {"component": "event_stability_score", "value": selected_rec.scores.event_stability_score},
-                        {"component": "options_market_quality_score", "value": selected_rec.scores.options_market_quality_score},
-                        {"component": "assignment_comfort_score", "value": selected_rec.scores.assignment_comfort_score},
-                        {"component": "stock_score_total", "value": selected_rec.scores.stock_score_total},
-                        {"component": "breakeven_score", "value": selected_rec.scores.breakeven_score},
-                        {"component": "secured_yield_score", "value": selected_rec.scores.secured_yield_score},
-                        {"component": "delta_fit_score", "value": selected_rec.scores.delta_fit_score},
-                        {"component": "liquidity_score", "value": selected_rec.scores.liquidity_score},
-                        {"component": "dte_fit_score", "value": selected_rec.scores.dte_fit_score},
-                        {"component": "contract_score_total", "value": selected_rec.scores.contract_score_total},
-                        {"component": "pres_normalized", "value": selected_rec.scores.pres_normalized},
-                        {"component": "final_score", "value": selected_rec.scores.final_score},
-                    ]
-                )
-                st.dataframe(score_breakdown, use_container_width=True)
+        with st.expander("Advanced scoring details", expanded=False):
+            score_breakdown = pd.DataFrame(
+                [
+                    {"component": "quality_score", "value": selected_rec.scores.quality_score},
+                    {"component": "event_stability_score", "value": selected_rec.scores.event_stability_score},
+                    {"component": "options_market_quality_score", "value": selected_rec.scores.options_market_quality_score},
+                    {"component": "assignment_comfort_score", "value": selected_rec.scores.assignment_comfort_score},
+                    {"component": "stock_score_total", "value": selected_rec.scores.stock_score_total},
+                    {"component": "breakeven_score", "value": selected_rec.scores.breakeven_score},
+                    {"component": "secured_yield_score", "value": selected_rec.scores.secured_yield_score},
+                    {"component": "delta_fit_score", "value": selected_rec.scores.delta_fit_score},
+                    {"component": "liquidity_score", "value": selected_rec.scores.liquidity_score},
+                    {"component": "dte_fit_score", "value": selected_rec.scores.dte_fit_score},
+                    {"component": "contract_score_total", "value": selected_rec.scores.contract_score_total},
+                    {"component": "pres_normalized", "value": selected_rec.scores.pres_normalized},
+                    {"component": "final_score", "value": selected_rec.scores.final_score},
+                ]
+            )
+            st.dataframe(score_breakdown, use_container_width=True)
 
 
 # ---------------------------
@@ -1287,21 +1412,35 @@ with tab_details:
 with tab_diagnostics:
     st.subheader("Diagnostics")
 
-    diag_col1, diag_col2 = st.columns(2)
-
-    with diag_col1:
-        st.markdown("### Stock-level exclusions")
+    diag_row1_col1, diag_row1_col2 = st.columns(2)
+    with diag_row1_col1:
+        st.markdown("### Stock-level hard fails")
         if stock_excl_df.empty:
-            st.write("No stock-level exclusions recorded.")
+            st.write("No stock-level hard fails recorded.")
         else:
             st.dataframe(stock_excl_df, use_container_width=True)
 
-    with diag_col2:
-        st.markdown("### Contract-level exclusions")
+    with diag_row1_col2:
+        st.markdown("### Contract-level hard fails")
         if contract_excl_df.empty:
-            st.write("No contract-level exclusions recorded.")
+            st.write("No contract-level hard fails recorded.")
         else:
             st.dataframe(contract_excl_df, use_container_width=True)
+
+    diag_row2_col1, diag_row2_col2 = st.columns(2)
+    with diag_row2_col1:
+        st.markdown("### Stock-level warnings")
+        if stock_warn_df.empty:
+            st.write("No stock-level warnings recorded.")
+        else:
+            st.dataframe(stock_warn_df, use_container_width=True)
+
+    with diag_row2_col2:
+        st.markdown("### Contract-level warnings")
+        if contract_warn_df.empty:
+            st.write("No contract-level warnings recorded.")
+        else:
+            st.dataframe(contract_warn_df, use_container_width=True)
 
     st.markdown("### Provider errors")
 
@@ -1344,7 +1483,7 @@ with tab_diagnostics:
     show_only_symbols_with_issues = st.checkbox(
         "Show only symbols with issues",
         value=False,
-        help="Filter to symbols with provider errors, stock exclusions, or zero recommendations.",
+        help="Filter to symbols with provider errors, hard fails, warnings, or zero recommendations.",
     )
 
     per_symbol_rows = []
@@ -1353,7 +1492,11 @@ with tab_diagnostics:
             "symbol": symbol,
             "contracts_pulled": payload.get("contract_count", 0),
             "recommendation_count": payload.get("recommendation_count", 0),
-            "stock_exclusion_reasons": "; ".join(payload.get("stock_exclusion_reasons", [])),
+            "stock_eligibility_status": payload.get("stock_eligibility_status"),
+            "stock_hard_fail_reasons": joined(payload.get("stock_hard_fail_reasons", [])),
+            "stock_warning_reasons": joined(payload.get("stock_warning_reasons", [])),
+            "contract_hard_fail_count": len(payload.get("contract_hard_fail_reasons", [])),
+            "contract_warning_count": len(payload.get("contract_warning_reasons", [])),
             "provider_error": payload.get("exception"),
             "provider_detail_error_count": len(payload.get("provider_detail_errors", [])),
             "provider_detail_errors": "; ".join(payload.get("provider_detail_errors", [])),
@@ -1362,7 +1505,10 @@ with tab_diagnostics:
         has_issue = (
             bool(payload.get("exception"))
             or bool(payload.get("provider_detail_errors"))
-            or bool(payload.get("stock_exclusion_reasons"))
+            or bool(payload.get("stock_hard_fail_reasons"))
+            or bool(payload.get("stock_warning_reasons"))
+            or bool(payload.get("contract_hard_fail_reasons"))
+            or bool(payload.get("contract_warning_reasons"))
             or payload.get("recommendation_count", 0) == 0
         )
 
