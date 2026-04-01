@@ -570,6 +570,33 @@ def build_scan_changes(current_df, previous_df):
 
     return new_symbols, dropped_symbols, movers_df
 
+def safe_grade_trade_separation(recs):
+    if not recs:
+        return {
+            "separation_label": "Unavailable",
+            "separation_gap": None,
+            "separation_text": "No recommendations available to compare.",
+        }
+
+    try:
+        return grade_trade_separation(recs)
+    except TypeError as e:
+        if "selected_score" not in str(e):
+            return {
+                "separation_label": "Unavailable",
+                "separation_gap": None,
+                "separation_text": f"Trade separation unavailable: {e}",
+            }
+
+    try:
+        selected_score = getattr(recs[0].scores, "final_score", None)
+        return grade_trade_separation(recs, selected_score)
+    except Exception as e:
+        return {
+            "separation_label": "Unavailable",
+            "separation_gap": None,
+            "separation_text": f"Trade separation unavailable: {e}",
+        }
 
 def render_action_idea_row(row, idx):
     st.markdown(
@@ -946,7 +973,7 @@ if run_scan:
                 results_by_symbol[symbol]["technical_context"] = tech
                 results_by_symbol[symbol]["technical_summary"] = tech_summary
 
-                separation = grade_trade_separation(recs)
+                separation = safe_grade_trade_separation(recs)
 
                 for rec in recs:
                     rec._company_name = metadata_by_symbol.get(symbol, {}).get("company_name")
@@ -987,6 +1014,12 @@ if run_scan:
 
         except Exception as e:
             results_by_symbol[symbol]["exception"] = str(e)
+
+            if (
+                results_by_symbol[symbol]["contract_count"] > 0
+                and not results_by_symbol[symbol]["stock_hard_fail_reasons"]
+            ):
+                results_by_symbol[symbol]["stock_warning_reasons"].append("post_processing_exception")
 
     progress.empty()
     status.empty()
