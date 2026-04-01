@@ -103,7 +103,7 @@ def score_warning_severity(
 
     if high >= 2 or severity_points >= 8:
         severity_label = "High"
-    elif high >= 1 or severity_points >= 4:
+    elif high >= 1 or medium >= 1 or severity_points >= 2:
         severity_label = "Medium"
     elif total_items > 0:
         severity_label = "Low"
