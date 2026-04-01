@@ -1248,8 +1248,8 @@ with tab_details:
 
         a1, a2, a3, a4, a5, a6 = st.columns(6)
         a1.metric("Strike", fmt_num(c.strike))
-        a2.metric("Expiration", c.expiration_date)
-        a3.metric("DTE", c.dte)
+        a2.metric("Expiration", c.expiration_date.isoformat() if c.expiration_date else "—")
+        a3.metric("DTE", c.dte if c.dte is not None else "—")
         a4.metric("Premium", fmt_num(c.premium))
         a5.metric("Break-even", fmt_num(c.breakeven_price))
         a6.metric("Annualized yield", fmt_pct(c.annualized_secured_yield))
