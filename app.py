@@ -442,7 +442,7 @@ def render_price_chart(hist: pd.DataFrame, tech: dict, breakeven_price: float | 
     chart_df["MA20"] = chart_df["Close"].rolling(20).mean()
     chart_df["MA50"] = chart_df["Close"].rolling(50).mean()
 
-    fig, ax = plt.subplots(figsize=(9, 3.6))
+    fig, ax = plt.subplots(figsize=(8.5, 3.2))
     ax.plot(chart_df.index, chart_df["Close"], label="Close")
     ax.plot(chart_df.index, chart_df["MA20"], label="20D MA")
     ax.plot(chart_df.index, chart_df["MA50"], label="50D MA")
