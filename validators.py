@@ -138,24 +138,25 @@ def validate_contract(
     elif contract.spread_pct is not None and contract.spread_pct > min(0.10, cfg.max_spread_pct):
         _add_contract_warning(contract, "spread_moderately_wide")
 
-    if cfg.exclude_earnings_before_expiry and metrics is not None:
-        if metrics.days_to_earnings is None:
-            if cfg.strict_earnings_date_handling:
+    if metrics is not None:
+        if cfg.exclude_earnings_before_expiry:
+            if metrics.days_to_earnings is None or metrics.earnings_date is None:
                 _add_contract_hard_fail(contract, "earnings_date_unknown")
                 contract._debug_earnings_classification = "hard_fail_unknown_earnings"
+            elif metrics.days_to_earnings <= contract.dte:
+                _add_contract_hard_fail(contract, "earnings_before_expiry")
+                contract._debug_earnings_classification = "hard_fail_known_earnings_before_expiry"
             else:
+                contract._debug_earnings_classification = "safe_known_earnings_after_expiry"
+        else:
+            if metrics.days_to_earnings is None or metrics.earnings_date is None:
                 _add_contract_warning(contract, "earnings_date_unknown")
                 contract._debug_earnings_classification = "warning_unknown_earnings"
-        elif metrics.days_to_earnings <= contract.dte:
-            _add_contract_hard_fail(contract, "earnings_before_expiry")
-            contract._debug_earnings_classification = "hard_fail_known_earnings_before_expiry"
-    elif metrics is not None:
-        if metrics.days_to_earnings is None:
-            _add_contract_warning(contract, "earnings_date_unknown")
-            contract._debug_earnings_classification = "warning_unknown_earnings"
-        elif metrics.days_to_earnings <= contract.dte:
-            _add_contract_warning(contract, "earnings_before_expiry")
-            contract._debug_earnings_classification = "warning_known_earnings_before_expiry"
+            elif metrics.days_to_earnings <= contract.dte:
+                _add_contract_warning(contract, "earnings_before_expiry")
+                contract._debug_earnings_classification = "warning_known_earnings_before_expiry"
+            else:
+                contract._debug_earnings_classification = "safe_known_earnings_after_expiry"
 
     if contract.open_interest is None and contract.volume is None:
         _add_contract_hard_fail(contract, "missing_oi_and_volume")
