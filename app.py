@@ -84,6 +84,14 @@ def technical_rank(value):
     return mapping.get(value, 0)
 
 
+def decision_emoji(value):
+    return {
+        "Ready": "🟢",
+        "Review": "🟡",
+        "Pass": "🔴",
+    }.get(value, "⚪")
+
+
 def derive_decision_status(row):
     confidence = row.get("confidence")
     technical_label = row.get("technical_label")
@@ -322,7 +330,7 @@ def render_price_chart(hist: pd.DataFrame, tech: dict, breakeven_price: float | 
     chart_df["MA20"] = chart_df["Close"].rolling(20).mean()
     chart_df["MA50"] = chart_df["Close"].rolling(50).mean()
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(9, 3.6))
     ax.plot(chart_df.index, chart_df["Close"], label="Close")
     ax.plot(chart_df.index, chart_df["MA20"], label="20D MA")
     ax.plot(chart_df.index, chart_df["MA50"], label="50D MA")
@@ -338,11 +346,12 @@ def render_price_chart(hist: pd.DataFrame, tech: dict, breakeven_price: float | 
         ax.axhline(breakeven_price, linestyle=":", linewidth=1.5, label="Break-even")
 
     ax.set_title("Price chart with break-even and trend overlays")
-    ax.legend()
+    ax.legend(loc="upper right", fontsize=8)
     ax.grid(True, alpha=0.3)
     fig.autofmt_xdate()
+    fig.tight_layout()
 
-    st.pyplot(fig)
+    st.pyplot(fig, use_container_width=True)
 
 
 def filter_ranked_df(
@@ -421,6 +430,19 @@ def build_scan_changes(current_df: pd.DataFrame, previous_df: pd.DataFrame):
     return new_symbols, dropped_symbols, movers_df
 
 
+def render_action_idea_row(row, idx):
+    st.markdown(f"**#{idx} {decision_emoji(row.get('decision_status'))} {row.get('symbol')} — {row.get('decision_status', 'Review')}**")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Contract", f"{fmt_num(row.get('strike'))}P / {row.get('expiration')}")
+    c2.metric("Entry", fmt_num(row.get("entry_limit")))
+    c3.metric("Yield", fmt_pct(row.get("annualized_secured_yield")))
+    c4.metric("Cushion", fmt_pct(row.get("breakeven_discount_pct")))
+    c5.metric("Score", fmt_num(row.get("final_score")))
+    c6.metric("Confidence", row.get("confidence"))
+    st.caption(f"Technical: {row.get('technical_label', 'Unknown')} | Watchout: {row.get('risks', '—')}")
+    st.divider()
+
+
 # ---------------------------
 # Sidebar / settings
 # ---------------------------
@@ -477,6 +499,23 @@ with st.sidebar:
 
     exclude_earnings = st.checkbox("Exclude earnings before expiry", value=True)
 
+    run_scan = st.button("Run Scan", type="primary")
+
+    if st.button("Clear cached results"):
+        st.session_state.scan_completed = False
+        st.session_state.all_recommendations = []
+        st.session_state.results_by_symbol = {}
+        st.session_state.ranked_df = pd.DataFrame()
+        st.session_state.previous_ranked_df = pd.DataFrame()
+        st.session_state.stock_excl_df = pd.DataFrame()
+        st.session_state.contract_excl_df = pd.DataFrame()
+        st.session_state.scan_summary = {}
+        st.session_state.last_scan_cfg = None
+        st.session_state.selected_detail_symbol = None
+        st.rerun()
+
+    st.markdown("---")
+
     with st.expander("Advanced scan rules", expanded=False):
         target_dte = st.number_input("Target DTE", min_value=1, max_value=365, value=32)
         target_delta = st.number_input(
@@ -503,21 +542,6 @@ with st.sidebar:
         )
         require_quality_data = st.checkbox("Require quality data", value=False)
         strict_data_mode = st.checkbox("Strict data mode", value=False)
-
-    run_scan = st.button("Run Scan", type="primary")
-
-    if st.button("Clear cached results"):
-        st.session_state.scan_completed = False
-        st.session_state.all_recommendations = []
-        st.session_state.results_by_symbol = {}
-        st.session_state.ranked_df = pd.DataFrame()
-        st.session_state.previous_ranked_df = pd.DataFrame()
-        st.session_state.stock_excl_df = pd.DataFrame()
-        st.session_state.contract_excl_df = pd.DataFrame()
-        st.session_state.scan_summary = {}
-        st.session_state.last_scan_cfg = None
-        st.session_state.selected_detail_symbol = None
-        st.rerun()
 
 cfg = ScanConfig(
     max_symbols_to_scan=max_symbols,
@@ -728,7 +752,7 @@ with tab_dashboard:
 
         hero1, hero2, hero3, hero4, hero5, hero6 = st.columns(6)
         hero1.metric("Symbol", best["symbol"])
-        hero2.metric("Decision", best.get("decision_status", "Review"))
+        hero2.metric("Decision", f"{decision_emoji(best.get('decision_status'))} {best.get('decision_status')}")
         hero3.metric("Contract", f"{fmt_num(best['strike'])}P")
         hero4.metric("Expiration / DTE", f"{best['expiration']} / {int(best['dte'])}")
         hero5.metric("Suggested entry", fmt_num(best["entry_limit"]))
@@ -742,32 +766,16 @@ with tab_dashboard:
         hero11.metric("Final score", fmt_num(best["final_score"]))
         hero12.metric("Gap vs #2", fmt_num(next_gap))
 
-        st.write(
-            f"**Technical read:** {best.get('technical_label', 'Unknown')} | "
-            f"**Trend:** {best.get('trend_state', 'Unknown')}"
+        st.caption(
+            f"Technical: {best.get('technical_label', 'Unknown')} | "
+            f"Trend: {best.get('trend_state', 'Unknown')} | "
+            f"Watchout: {best.get('risks', '—')}"
         )
         st.write(f"**Why it stands out:** {best.get('reasons', '—')}")
-        st.write(f"**Main watchout:** {best.get('risks', '—')}")
 
         st.markdown("### Top actionable ideas")
-        actionable_cols = [
-            "symbol",
-            "expiration",
-            "dte",
-            "strike",
-            "premium",
-            "entry_limit",
-            "breakeven_discount_pct",
-            "annualized_secured_yield",
-            "technical_label",
-            "decision_status",
-            "final_score",
-            "confidence",
-            "risks",
-        ]
-        actionable_df = dashboard_df.head(3).copy()
-        available_cols = [col for col in actionable_cols if col in actionable_df.columns]
-        st.dataframe(actionable_df[available_cols], use_container_width=True)
+        for idx, (_, row) in enumerate(dashboard_df.head(3).iterrows(), start=1):
+            render_action_idea_row(row, idx)
 
         st.markdown("### What changed since last scan")
         change_col1, change_col2 = st.columns(2)
@@ -869,7 +877,6 @@ with tab_ranked:
             "Sort ranked setups by",
             options=[
                 "final_score",
-                "decision_status",
                 "annualized_secured_yield",
                 "breakeven_discount_pct",
                 "pres",
@@ -968,13 +975,12 @@ with tab_details:
         decision_status = row_for_status.get("decision_status", "Review")
 
         with st.expander("Trade summary", expanded=True):
-            st.markdown("## Recommended trade")
             summary_lines = describe_trade_setup(selected_rec)
             for line in summary_lines:
                 st.write(line)
 
             a1, a2, a3, a4, a5, a6 = st.columns(6)
-            a1.metric("Decision", decision_status)
+            a1.metric("Decision", f"{decision_emoji(decision_status)} {decision_status}")
             a2.metric("Contract", f"{selected_rec.symbol} {fmt_num(c.strike)}P")
             a3.metric("Suggested entry", fmt_num(selected_rec.suggested_entry_limit))
             a4.metric("50% take-profit", fmt_num(selected_rec.profit_take_debit))
@@ -1020,43 +1026,31 @@ with tab_details:
                 st.write(f"Warning flags: {', '.join(selected_rec.warning_flags)}")
 
         with st.expander("Technicals", expanded=False):
-            st.markdown("### Chart / technical read")
+            summary1, summary2, summary3 = st.columns(3)
+            summary1.metric("Trend", tech.get("trend_state", "Unknown"))
+            summary2.metric("Technical label", tech_summary.get("technical_label", "Unknown"))
+            summary3.metric("Technical score", fmt_num(tech_summary.get("technical_score")))
 
             tc1, tc2, tc3 = st.columns(3)
-            tc1.metric("Trend state", tech.get("trend_state", "Unknown"))
-            tc2.metric("20D MA", fmt_num(tech.get("ma20")))
-            tc3.metric("50D MA", fmt_num(tech.get("ma50")))
+            tc1.metric("20D MA", fmt_num(tech.get("ma20")))
+            tc2.metric("50D MA", fmt_num(tech.get("ma50")))
+            tc3.metric("Support zone", fmt_num(tech.get("support_zone")))
 
             tc4, tc5, tc6 = st.columns(3)
             tc4.metric("ATR(14)", fmt_num(tech.get("atr14")))
             tc5.metric("RSI(14)", fmt_num(tech.get("rsi14")))
-            tc6.metric("Support zone", fmt_num(tech.get("support_zone")))
+            tc6.metric("20D resistance", fmt_num(tech.get("resistance_20d")))
 
             tc7, tc8, tc9 = st.columns(3)
-            tc7.metric("20D resistance", fmt_num(tech.get("resistance_20d")))
-            tc8.metric("Distance to support", fmt_pct(tech.get("distance_to_support_pct")))
-            tc9.metric("Cushion in ATRs", fmt_num(tech.get("cushion_atr_units")))
-
-            tc10, tc11, tc12 = st.columns(3)
-            tc10.metric("Break-even vs support", fmt_num(tech.get("breakeven_vs_support")))
-            tc11.metric("Realized vol (20D)", fmt_pct(tech.get("realized_vol_20d")))
-            tc12.metric("IV / RV ratio", fmt_num(tech.get("iv_rv_ratio")))
-
-            tc13 = st.columns(1)[0]
-            tc13.metric(
-                "Break-even below support?",
-                "Yes" if tech.get("breakeven_vs_support") is not None and tech.get("breakeven_vs_support") < 0 else "No"
-            )
+            tc7.metric("Distance to support", fmt_pct(tech.get("distance_to_support_pct")))
+            tc8.metric("Cushion in ATRs", fmt_num(tech.get("cushion_atr_units")))
+            tc9.metric("IV / RV ratio", fmt_num(tech.get("iv_rv_ratio")))
 
             st.markdown("### Price chart")
             hist = market_provider.get_price_history(selected_symbol)
             render_price_chart(hist, tech, c.breakeven_price)
 
             st.markdown("### What the technicals mean")
-            t1, t2 = st.columns(2)
-            t1.metric("Technical context score", fmt_num(tech_summary.get("technical_score")))
-            t2.metric("Technical context label", tech_summary.get("technical_label", "Unknown"))
-
             explanations = tech_summary.get("technical_explanations", [])
             if explanations:
                 for item in explanations:
@@ -1064,31 +1058,7 @@ with tab_details:
             else:
                 st.write("No technical interpretation available.")
 
-            st.markdown("### How this affects confidence")
-            technical_score = tech_summary.get("technical_score")
-            if technical_score is None:
-                st.write(
-                    "Technical context could not be fully assessed, so confidence is being driven mostly by liquidity, yield, and break-even factors."
-                )
-            elif technical_score >= 80:
-                st.success(
-                    "Technical context is supportive. Trend, support, ATR cushion, and relative value strengthen confidence in the trade."
-                )
-            elif technical_score >= 60:
-                st.info(
-                    "Technical context is mildly supportive. The scanner still likes the trade, and the chart/value backdrop is helping rather than hurting."
-                )
-            elif technical_score >= 40:
-                st.warning(
-                    "Technical context is neutral. The trade may still work, but the chart/value backdrop is not adding much extra edge."
-                )
-            else:
-                st.error(
-                    "Technical context is weak. That lowers confidence even if the option metrics themselves still look attractive."
-                )
-
         with st.expander("Alternatives on this stock", expanded=False):
-            st.markdown("### Other valid puts on this stock")
             if not all_symbol_recs:
                 st.write("No qualifying contracts stored for this stock.")
             else:
@@ -1128,7 +1098,6 @@ with tab_details:
                     "Sort contracts by",
                     options=[
                         "final_score",
-                        "decision_status",
                         "annualized_secured_yield",
                         "breakeven_discount_pct",
                         "contract_score",
