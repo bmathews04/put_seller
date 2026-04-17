@@ -33,9 +33,6 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in test/non-UI envir
     st = _StreamlitFallback()
 
 
-# ----------------------------
-# Pure fetch helpers (no Streamlit dependency in behavior)
-# ----------------------------
 def _require_yfinance() -> None:
     if getattr(yf, "Ticker", None) is None:
         raise ModuleNotFoundError("yfinance is required for live market data fetches")
@@ -60,9 +57,6 @@ def _fetch_option_chain(symbol: str, exp_str: str) -> pd.DataFrame:
     return chain.puts.copy()
 
 
-# ----------------------------
-# Streamlit-cached wrappers
-# ----------------------------
 @st.cache_data(ttl=900, show_spinner=False)
 def _cached_price_history(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
     return _fetch_price_history(symbol, period, interval)
@@ -111,14 +105,26 @@ class YFinanceMarketProvider:
         cfg: ScanConfig | None = None,
         stock_metrics: StockMetrics | None = None,
     ) -> list[OptionContract]:
-        self.last_errors = []
-
         _require_yfinance()
         ticker = yf.Ticker(symbol)
 
         # Reuse caller-supplied metrics when available to avoid duplicate fetches
         metrics = stock_metrics if stock_metrics is not None else self.get_stock_metrics(symbol)
         underlying_price = metrics.stock_price
+
+        # If price still isn't available, try one last lightweight fallback and
+        # treat the symbol as non-fatal rather than throwing.
+        if underlying_price is None:
+            try:
+                hist = self.get_price_history(symbol, period="5d", interval="1d")
+                if hist is not None and not hist.empty and "Close" in hist.columns:
+                    closes = hist["Close"].dropna()
+                    if not closes.empty:
+                        underlying_price = self._safe_float(closes.iloc[-1])
+                        metrics.stock_price = underlying_price
+                        metrics.price_timestamp = datetime.now()
+            except Exception as e:
+                self.last_errors.append(f"{symbol}: fallback_price_history_failed: {type(e).__name__}: {e}")
 
         try:
             expirations = ticker.options or []
@@ -139,7 +145,6 @@ class YFinanceMarketProvider:
             if dte <= 0:
                 continue
 
-            # Early DTE filter to reduce workload
             if cfg is not None and (dte < cfg.min_dte or dte > cfg.max_dte):
                 continue
 
