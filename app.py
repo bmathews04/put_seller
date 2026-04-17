@@ -916,6 +916,7 @@ if run_scan:
             "provider_detail_errors": [],
             "earnings_debug_counts": {},
         }
+        market_provider.last_errors = []
 
         try:
             metrics = market_provider.get_stock_metrics(symbol)
